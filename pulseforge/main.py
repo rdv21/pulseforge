@@ -48,6 +48,8 @@ class PulseForgeBridge(QObject):
     appsChanged = Signal()
     devicesChanged = Signal()
     faderSynced = Signal(str, float, arguments=['channel', 'volume'])
+    statusMessage = Signal(str, arguments=['message'])  # toast/status bar
+    errorOccurred = Signal(str, arguments=['message'])  # error toast
 
     def __init__(self):
         super().__init__()
@@ -94,6 +96,8 @@ class PulseForgeBridge(QObject):
         self._route_timer.start()
         self._fader_sync_timer.start()
 
+        self.statusMessage.emit("PulseForge ready")
+
     def stop(self):
         """Clean shutdown — stop everything and remove PipeWire objects."""
         self._vu_timer.stop()
@@ -104,12 +108,8 @@ class PulseForgeBridge(QObject):
         self._mic_chain.stop()
         get_manager().stop_all()
 
-        # Kill any remaining pw-cat processes
-        try:
-            subprocess.run(["pkill", "-9", "-f", "pw-cat.*pulseforge"],
-                           capture_output=True, timeout=3)
-        except Exception:
-            pass
+        # Kill any remaining pw-cat processes (graceful via ProcessManager)
+        get_manager().cleanup_orphans()
 
         # Remove all PulseForge PipeWire objects
         print("  Shutdown: cleaning up PulseForge objects...")
@@ -129,8 +129,7 @@ class PulseForgeBridge(QObject):
         # ─── Clean slate: remove ALL leftover PulseForge objects ───
         print("  Cleanup: removing leftover PulseForge objects...")
         # Kill leftover pw-cat processes first (frees source/sink nodes)
-        subprocess.run(["pkill", "-9", "-f", "pw-cat.*pulseforge"],
-                       capture_output=True, timeout=3)
+        get_manager().cleanup_orphans()
         time.sleep(0.5)
         # Remove all loopbacks
         pw.remove_all_pulseforge_loopbacks()
@@ -158,10 +157,12 @@ class PulseForgeBridge(QObject):
                 print(f"  Virtual sink '{group}': node {node_id}")
             else:
                 print(f"  WARNING: Virtual sink '{group}' failed to create!")
+                self.errorOccurred.emit(f"Failed to create {group} audio channel")
 
         gaming_id = self._group_sink_ids.get("gaming")
         if gaming_id is None:
             print("  WARNING: Gaming sink not created")
+            self.errorOccurred.emit("Failed to create master audio sink. Audio routing will not work.")
             return
 
         pw.set_default_sink(gaming_id)
@@ -294,6 +295,9 @@ class PulseForgeBridge(QObject):
         )
 
         self._mic_chain.start()
+
+        if not self._mic_chain._running:
+            self.errorOccurred.emit("Mic processing chain failed to start. Check that PipeWire is running and your input device is available.")
 
         # Set configured input device (used by auto-detection in _redirect_capture)
         saved_input = self._config.get("devices", {}).get("input", "")

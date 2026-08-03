@@ -203,10 +203,11 @@ class ProcessManager:
         (e.g. from a previous crashed instance).
         """
         patterns = [
-            ("pipewire -c filter-chain", None),  # any filter-chain
+            ("pw-cat.*pulseforge", "pw-cat"),
+            ("pipewire -c filter-chain", "filter-chain"),
         ]
 
-        for pattern, _ in patterns:
+        for pattern, label in patterns:
             try:
                 r = subprocess.run(
                     ["pgrep", "-f", pattern],
@@ -217,14 +218,14 @@ class ProcessManager:
 
                 for pid in pids:
                     if pid not in tracked_pids:
-                        print(f"  PM: Killing orphaned process {pid} ({pattern})")
+                        print(f"  PM: Killing orphaned {label} process {pid}")
                         try:
                             os.kill(pid, signal.SIGTERM)
                         except Exception:
                             pass
 
                 # Wait and SIGKILL survivors
-                time.sleep(1)
+                time.sleep(0.5)
                 for pid in pids:
                     if pid not in tracked_pids:
                         try:

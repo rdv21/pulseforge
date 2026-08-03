@@ -100,6 +100,14 @@ ApplicationWindow {
                 }
             }
         }
+
+        function onStatusMessage(message) {
+            statusBar.show(message, false)
+        }
+
+        function onErrorOccurred(message) {
+            statusBar.show(message, true)
+        }
     }
 
     function refreshApps() {
@@ -341,6 +349,50 @@ ApplicationWindow {
             onAppMoved: function(appName, group, sinkInputId) {
                 PulseForge.moveAppToGroup(appName, group, sinkInputId)
             }
+        }
+    }
+
+    // ─── Status Toast Bar ───
+    Rectangle {
+        id: statusBar
+        property string message: ""
+        property color msgColor: root.accent
+        property bool isError: false
+
+        anchors.bottom: parent.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
+        height: message.length > 0 ? 28 : 0
+        color: isError ? "#3a1515" : "#0f1f2a"
+        border.color: isError ? "#5a2525" : root.accentDim
+        border.width: 1
+        visible: message.length > 0
+
+        Behavior on height { NumberAnimation { duration: 200 } }
+
+        Text {
+            anchors.centerIn: parent
+            text: statusBar.message
+            color: statusBar.msgColor
+            font.pixelSize: 11
+            font.family: "monospace"
+        }
+
+        Timer {
+            id: statusTimer
+            interval: 4000
+            repeat: false
+            onTriggered: {
+                statusBar.message = ""
+                statusBar.isError = false
+            }
+        }
+
+        function show(msg, isErr) {
+            message = msg
+            isError = isErr || false
+            msgColor = isError ? "#ff5555" : root.accent
+            statusTimer.restart()
         }
     }
 

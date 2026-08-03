@@ -58,7 +58,11 @@ def load_config():
             return _deep_merge(DEFAULT_CONFIG.copy(), cfg)
         except (json.JSONDecodeError, IOError):
             pass
-    return DEFAULT_CONFIG.copy()
+    # First run — auto-detect hardware
+    cfg = DEFAULT_CONFIG.copy()
+    _auto_detect_devices(cfg)
+    save_config(cfg)
+    return cfg
 
 
 def save_config(config):
@@ -115,3 +119,70 @@ def _deep_merge(base, override):
         else:
             result[k] = v
     return result
+
+
+def _auto_detect_devices(cfg):
+    """Auto-detect hardware input/output devices on first run.
+
+    Sets sensible defaults without requiring user interaction.
+    """
+    import subprocess, re
+
+    # Detect default output sink
+    try:
+        r = subprocess.run(
+            ["pactl", "list", "short", "sinks"],
+            capture_output=True, text=True, timeout=5
+        )
+        default_sink = None
+        best_sink = None
+        for line in r.stdout.strip().split("\n"):
+            parts = line.split("\t")
+            if len(parts) < 2:
+                continue
+            name = parts[1]
+            if "pulseforge" in name:
+                continue
+            # Prefer hardware sinks (alsa)
+            if "alsa_output" in name:
+                if best_sink is None:
+                    best_sink = name
+                # Prefer HDMI or analog stereo as default
+                if "hdmi-stereo" in name or "analog-stereo" in name:
+                    best_sink = name
+                    break
+        if best_sink:
+            cfg["devices"]["output"] = best_sink
+            print(f"  Auto-detect: output → {best_sink}")
+    except Exception:
+        pass
+
+    # Detect input source (any hardware mic)
+    try:
+        r = subprocess.run(
+            ["pactl", "list", "short", "sources"],
+            capture_output=True, text=True, timeout=5
+        )
+        best_input = None
+        for line in r.stdout.strip().split("\n"):
+            parts = line.split("\t")
+            if len(parts) < 2:
+                continue
+            name = parts[1]
+            if ".monitor" in name or "pulseforge" in name:
+                continue
+            if "alsa_input" in name:
+                if best_input is None:
+                    best_input = name
+                # Prefer USB mics (Scarlett, Blue Yeti, etc)
+                if "usb-" in name and "Mic" in name:
+                    best_input = name
+                    break
+        if best_input:
+            cfg["devices"]["input"] = best_input
+            print(f"  Auto-detect: input → {best_input}")
+    except Exception:
+        pass
+
+    # Stream device defaults to the same output
+    cfg.setdefault("devices", {})["stream"] = cfg["devices"].get("output")
