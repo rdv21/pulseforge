@@ -52,6 +52,7 @@ class PulseForgeBridge(QObject):
     faderSynced = Signal(str, float, arguments=['channel', 'volume'])
     statusMessage = Signal(str, arguments=['message'])  # toast/status bar
     errorOccurred = Signal(str, arguments=['message'])  # error toast
+    soundboardChanged = Signal(int, arguments=['page'])  # grid slots changed, reload page
 
     def __init__(self):
         super().__init__()
@@ -1365,8 +1366,23 @@ class PulseForgeBridge(QObject):
         if file_path:
             from pathlib import Path as _P
             self._soundboard.assign_sound(page, index, file_path, _P(file_path).stem)
-            # Refresh QML
-            self.getSoundboardSlots(page)  # trigger reload via signal if needed
+            # Emit signal so QML refreshes the grid
+            self.soundboardChanged.emit(page)
+
+    @Slot(str, result=str)
+    def getSoundboardOutput(self):
+        """Return the current soundboard output target sink name."""
+        return self._soundboard.get_output_target()
+
+    @Slot(str)
+    def setSoundboardOutput(self, target: str):
+        """Set the soundboard output target (PipeWire sink name).
+
+        Options: pulseforge_gaming (main mix), pulseforge_game, pulseforge_chat,
+                pulseforge_media, pulseforge_aux, pulseforge_stream
+        """
+        self._soundboard.set_output_target(target)
+        self.statusMessage.emit(f"Soundboard output: {target}")
 
     # ─── Channel Recording Slots ───
 
@@ -1375,7 +1391,8 @@ class PulseForgeBridge(QObject):
         """Start recording a channel into a 15s ring buffer."""
         from .backend import pipewire_ctl as pw
         internal = pw._VIRTUAL_SINK_INTERNAL.get(channel, f"pulseforge_{channel}")
-        self._soundboard.start_recording(channel, internal)
+        monitor = f"{internal}.monitor"
+        self._soundboard.start_recording(channel, monitor)
 
     @Slot(str)
     def stopChannelRecording(self, channel: str):

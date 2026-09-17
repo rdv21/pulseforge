@@ -37,8 +37,35 @@ Window {
     property real trimEnd: 0
     property bool clipPlaying: false
     property bool editorMode: false  // toggle between grid and editor view
+    property string outputTarget: "pulseforge_gaming"
 
-    Component.onCompleted: loadSoundboard()
+    Component.onCompleted: {
+        loadSoundboard()
+        if (typeof PulseForge !== "undefined") {
+            outputTarget = PulseForge.getSoundboardOutput()
+            outputCombo.currentIndex = _targetToIndex(outputTarget)
+        }
+    }
+
+    function _targetToIndex(target) {
+        var map = {"pulseforge_gaming": 0, "pulseforge_game": 1, "pulseforge_chat": 2,
+                   "pulseforge_media": 3, "pulseforge_aux": 4, "pulseforge_stream": 5}
+        return map[target] !== undefined ? map[target] : 0
+    }
+
+    function _indexToTarget(idx) {
+        var targets = ["pulseforge_gaming", "pulseforge_game", "pulseforge_chat",
+                       "pulseforge_media", "pulseforge_aux", "pulseforge_stream"]
+        return targets[idx] || "pulseforge_gaming"
+    }
+
+    // Listen for soundboard changes from backend
+    Connections {
+        target: PulseForge
+        function onSoundboardChanged(page) {
+            if (page === sbWindow.currentPage) loadSoundboard()
+        }
+    }
 
     function loadSoundboard() {
         if (typeof PulseForge === "undefined") return
@@ -183,37 +210,62 @@ Window {
             spacing: 8
             visible: !editorMode
 
-            // ─── Page tabs ───
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 4
+            // ─── Page tabs + Output selector ───
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 4
 
-                Repeater {
-                    model: 3
-                    Rectangle {
-                        Layout.fillWidth: true
-                        height: 28
-                        radius: 5
-                        color: sbWindow.currentPage === index ? sbWindow.accent : sbWindow.bgCard
-                        border.width: 1
-                        border.color: sbWindow.currentPage === index ? sbWindow.accent : sbWindow.borderColor
+            Repeater {
+                model: 3
+                Rectangle {
+                    Layout.fillWidth: true
+                    height: 28
+                    radius: 5
+                    color: sbWindow.currentPage === index ? sbWindow.accent : sbWindow.bgCard
+                    border.width: 1
+                    border.color: sbWindow.currentPage === index ? sbWindow.accent : sbWindow.borderColor
 
-                        Text {
-                            anchors.centerIn: parent
-                            text: "Page " + (index + 1)
-                            font.pixelSize: 11
-                            font.bold: sbWindow.currentPage === index
-                            color: sbWindow.currentPage === index ? "white" : sbWindow.textDim
-                        }
+                    Text {
+                        anchors.centerIn: parent
+                        text: "Page " + (index + 1)
+                        font.pixelSize: 11
+                        font.bold: sbWindow.currentPage === index
+                        color: sbWindow.currentPage === index ? "white" : sbWindow.textDim
+                    }
 
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: { sbWindow.currentPage = index; loadSoundboard() }
-                        }
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: { sbWindow.currentPage = index; loadSoundboard() }
                     }
                 }
             }
+        }
+
+        // ─── Output target selector ───
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 6
+
+            Text {
+                text: "Output:"
+                font.pixelSize: 10
+                color: sbWindow.textDim
+            }
+
+            ComboBox {
+                id: outputCombo
+                Layout.fillWidth: true
+                model: ["Main Mix", "Game", "Chat", "Media", "Aux", "Stream Only"]
+                font.pixelSize: 10
+                onActivated: {
+                    var target = _indexToTarget(currentIndex)
+                    sbWindow.outputTarget = target
+                    if (typeof PulseForge !== "undefined")
+                        PulseForge.setSoundboardOutput(target)
+                }
+            }
+        }
 
             // ─── 3x3 Grid ───
             Rectangle {

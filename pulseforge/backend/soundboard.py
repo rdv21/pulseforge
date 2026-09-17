@@ -76,15 +76,15 @@ class AudioClip:
 
 
 class ChannelRecorder:
-    """Records a 15-second ring buffer from a PipeWire channel sink.
+    """Records a 15-second ring buffer from a PipeWire channel sink monitor.
 
-    Uses pw-cat --record --target=<sink> to capture audio from a virtual
-    sink. The ring buffer holds the last BUFFER_SECONDS of audio.
+    Uses pw-cat --record --target=<sink>.monitor to capture audio from a virtual
+    sink's monitor source. The ring buffer holds the last BUFFER_SECONDS of audio.
     """
 
-    def __init__(self, channel: str, sink_node_name: str):
+    def __init__(self, channel: str, sink_monitor_name: str):
         self.channel = channel
-        self.sink_node_name = sink_node_name
+        self.sink_monitor_name = sink_monitor_name  # e.g. "pulseforge_game.monitor"
         self._buffer = deque(maxlen=BUFFER_SAMPLES)
         self._proc: Optional[subprocess.Popen] = None
         self._thread: Optional[threading.Thread] = None
@@ -117,21 +117,31 @@ class ChannelRecorder:
             self._thread = None
 
     def _capture_loop(self):
-        """Capture loop: read raw float32 from pw-cat stdout into ring buffer."""
+        """Capture loop: read raw float32 from pw-cat stdout into ring buffer.
+
+        Uses --container raw to get header-less PCM (no WAV header interference).
+        Uses '-' as positional arg for stdout output.
+        """
+        # Ensure we're targeting a monitor source
+        target = self.sink_monitor_name
+        if not target.endswith(".monitor"):
+            target = f"{target}.monitor"
+
         cmd = [
             "pw-cat", "--record",
-            "--target", self.sink_node_name,
+            "--target", target,
             "--format", "f32",
             "--rate", str(SAMPLE_RATE),
             "--channels", str(CHANNELS),
+            "--container", "raw",
             "--latency", "480",
-            "-o", "-"  # output to stdout
+            "-"  # stdout (positional arg, not -o -)
         ]
         try:
             self._proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
             )
-            chunk_size = 480 * CHANNELS * 4  # 480 frames * 2ch * 4 bytes
+            chunk_size = 480 * CHANNELS * 4  # 480 frames * 2ch * 4 bytes (float32)
             while self._running and self._proc.poll() is None:
                 data = self._proc.stdout.read(chunk_size)
                 if not data:
@@ -219,6 +229,11 @@ class SoundboardBackend:
         ]
         self.current_page = 0
 
+        # Output target for soundboard playback (default: main mix)
+        # Options: pulseforge_gaming (main mix), pulseforge_game, pulseforge_chat,
+        #          pulseforge_media, pulseforge_aux, pulseforge_stream
+        self.output_target: str = "pulseforge_gaming"
+
         # Channel recorders
         self._recorders: dict[str, ChannelRecorder] = {}
 
@@ -285,14 +300,17 @@ class SoundboardBackend:
             self._save_config()
 
     def play_sound(self, page: int, index: int):
-        """Play the sound assigned to a slot."""
+        """Play the sound assigned to a slot, routed to the output target."""
         slot = self.get_slot(page, index)
         if not slot or not slot.is_assigned:
             return
         self.stop_playback(page, index)
         try:
+            cmd = ["pw-play", slot.file_path]
+            if self.output_target:
+                cmd.extend(["--target", self.output_target])
             slot._proc = subprocess.Popen(
-                ["pw-play", slot.file_path],
+                cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
@@ -321,11 +339,16 @@ class SoundboardBackend:
 
     # ─── Channel Recording ───
 
-    def start_recording(self, channel: str, sink_node_name: str):
-        """Start recording a channel's audio into a ring buffer."""
+    def start_recording(self, channel: str, sink_monitor_name: str):
+        """Start recording a channel's audio into a ring buffer.
+
+        Args:
+            channel: Channel name (game, chat, media, aux, mic)
+            sink_monitor_name: Monitor source name (e.g. pulseforge_game.monitor)
+        """
         if channel in self._recorders and self._recorders[channel].is_running:
             return
-        recorder = ChannelRecorder(channel, sink_node_name)
+        recorder = ChannelRecorder(channel, sink_monitor_name)
         recorder.start()
         self._recorders[channel] = recorder
 
@@ -426,7 +449,7 @@ class SoundboardBackend:
         }
 
     def play_clip_preview(self) -> bool:
-        """Play the current trimmed clip via a temp WAV + pw-play."""
+        """Play the current trimmed clip via a temp WAV + pw-play (routed to output target)."""
         clip = self.get_current_clip()
         if not clip:
             return False
@@ -435,8 +458,11 @@ class SoundboardBackend:
         if not self.export_clip_wav(clip, tmp_path):
             return False
         try:
+            cmd = ["pw-play", tmp_path]
+            if self.output_target:
+                cmd.extend(["--target", self.output_target])
             self._clip_proc = subprocess.Popen(
-                ["pw-play", tmp_path],
+                cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
@@ -467,6 +493,17 @@ class SoundboardBackend:
         """Discard the current clip."""
         self.stop_clip_preview()
         self._current_clip = None
+
+    def set_output_target(self, target: str):
+        """Set the output target for soundboard playback.
+
+        Args:
+            target: PipeWire sink name (e.g. pulseforge_gaming, pulseforge_stream)
+        """
+        self.output_target = target
+
+    def get_output_target(self) -> str:
+        return self.output_target
 
     def cleanup(self):
         """Stop all playback and recording."""
