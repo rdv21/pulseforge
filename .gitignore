@@ -25,10 +25,6 @@ env/
 # Note: these are runtime-generated, not part of the repo
 *.json.bak
 
-# Backups and internal changelogs
-pulseforge-backup-*/
-CHANGES-*.md
-
 # OS
 *.directory
 .Trash-*
