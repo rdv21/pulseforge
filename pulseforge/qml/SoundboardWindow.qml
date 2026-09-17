@@ -469,11 +469,51 @@ Window {
                         spacing: 6
 
                         Text {
-                            text: "Live Recording (15s ring buffer — always on)"
+                            text: "Live Recording (15s ring buffer)"
                             font.pixelSize: 12
                             font.bold: true
                             color: sbWindow.textDim
                             Layout.fillWidth: true
+                        }
+
+                        // Recording toggle switch
+                        Switch {
+                            checked: typeof PulseForge !== "undefined" && PulseForge.isRecordingEnabled()
+                            onToggled: {
+                                if (typeof PulseForge !== "undefined") {
+                                    PulseForge.setRecordingEnabled(checked)
+                                }
+                            }
+
+                            indicator: Rectangle {
+                                implicitWidth: 36
+                                implicitHeight: 16
+                                x: parent.leftPadding
+                                y: parent.topPadding + parent.availableHeight / 2 - height / 2
+                                radius: 8
+                                color: parent.checked ? sbWindow.streamGreen : "#333340"
+                                border.width: 1
+                                border.color: parent.checked ? "#4a9a5a" : sbWindow.borderColor
+
+                                Rectangle {
+                                    x: parent.parent.checked ? 20 : 2
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: 12
+                                    height: 12
+                                    radius: 6
+                                    color: "white"
+                                    Behavior on x { NumberAnimation { duration: 100 } }
+                                }
+                            }
+
+                            contentItem: Text {
+                                text: parent.checked ? "ON" : "OFF"
+                                font.pixelSize: 9
+                                font.bold: true
+                                color: parent.checked ? sbWindow.streamGreen : sbWindow.textDim
+                                leftPadding: 40
+                                verticalAlignment: Text.AlignVCenter
+                            }
                         }
 
                         // Always-on REC indicator
@@ -483,7 +523,7 @@ Window {
                             radius: 4
                             color: sbWindow.recordRed
                             anchors.verticalCenter: parent.verticalCenter
-                            visible: typeof PulseForge !== "undefined" && PulseForge.isChannelRecording(selectedChannel)
+                            visible: typeof PulseForge !== "undefined" && PulseForge.isRecordingEnabled() && PulseForge.isChannelRecording(selectedChannel)
 
                             SequentialAnimation on opacity {
                                 running: true
@@ -498,7 +538,7 @@ Window {
                             font.pixelSize: 10
                             font.bold: true
                             color: sbWindow.recordRed
-                            visible: typeof PulseForge !== "undefined" && PulseForge.isChannelRecording(selectedChannel)
+                            visible: typeof PulseForge !== "undefined" && PulseForge.isRecordingEnabled() && PulseForge.isChannelRecording(selectedChannel)
                         }
                     }
 
@@ -594,7 +634,7 @@ Window {
 
                         Button {
                             text: "Capture Clip (15s)"
-                            enabled: typeof PulseForge !== "undefined" && PulseForge.isChannelRecording(selectedChannel)
+                            enabled: typeof PulseForge !== "undefined" && PulseForge.isRecordingEnabled() && PulseForge.isChannelRecording(selectedChannel)
                             height: 32
                             contentItem: Text {
                                 text: parent.text

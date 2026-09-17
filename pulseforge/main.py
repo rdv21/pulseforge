@@ -1400,6 +1400,33 @@ class PulseForgeBridge(QObject):
         self._soundboard.set_output_target(target)
         self.statusMessage.emit(f"Soundboard output: {target}")
 
+    @Slot(result=bool)
+    def isRecordingEnabled(self):
+        """Return whether soundboard recording is enabled."""
+        return self._soundboard.is_recording_enabled()
+
+    @Slot(bool)
+    def setRecordingEnabled(self, enabled: bool):
+        """Toggle soundboard recording on/off.
+
+        When enabled, starts all channel recorders. When disabled, stops them.
+        Setting is persisted and restored on next PulseForge startup.
+        """
+        was_enabled = self._soundboard.is_recording_enabled()
+        self._soundboard.set_recording_enabled(enabled)
+        if enabled and not was_enabled:
+            # Start recording now
+            from .backend import pipewire_ctl as pw
+            monitor_map = {}
+            for channel in ["game", "chat", "media", "aux"]:
+                internal = pw._VIRTUAL_SINK_INTERNAL.get(channel, f"pulseforge_{channel}")
+                monitor_map[channel] = (f"{internal}.monitor", 2)
+            monitor_map["mic"] = ("pulseforge.mic.processed", 1)
+            self._soundboard.start_all_recording(monitor_map)
+            self.statusMessage.emit("Soundboard recording enabled")
+        elif not enabled and was_enabled:
+            self.statusMessage.emit("Soundboard recording disabled")
+
     # ─── Channel Recording Slots ───
 
     @Slot(str)

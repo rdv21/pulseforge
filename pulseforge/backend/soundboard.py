@@ -296,6 +296,9 @@ class SoundboardBackend:
         self._last_published_path: str = ""
         self._last_published_name: str = ""
 
+        # Recording enabled (persisted, starts with this state)
+        self.recording_enabled: bool = True
+
         # Load config
         self._load_config()
 
@@ -306,6 +309,7 @@ class SoundboardBackend:
         try:
             with open(self._config_file) as f:
                 data = json.load(f)
+            self.recording_enabled = data.get("recording_enabled", True)
             for page_idx, page_data in enumerate(data.get("pages", [])):
                 if page_idx >= 3:
                     break
@@ -320,7 +324,7 @@ class SoundboardBackend:
 
     def _save_config(self):
         """Save soundboard config to JSON."""
-        data = {"pages": []}
+        data = {"recording_enabled": self.recording_enabled, "pages": []}
         for page in self.pages:
             page_data = {"slots": []}
             for slot in page:
@@ -410,13 +414,13 @@ class SoundboardBackend:
     # ─── Always-On Channel Recording ───
 
     def start_all_recording(self, channel_monitor_map: dict):
-        """Start recording all channels at once.
+        """Start recording all channels at once (if recording is enabled).
 
-        Staggers start by 0.5s per channel to avoid move-source-output races.
-
-        Args:
-            channel_monitor_map: {channel: (source_name, channels)}
+        Staggers start by 1s per channel to avoid move-source-output races.
         """
+        if not self.recording_enabled:
+            print(f"  Soundboard: recording disabled, skipping")
+            return
         import threading
         def _start_channel(ch, source_name, channels, delay):
             time.sleep(delay)
@@ -667,6 +671,19 @@ class SoundboardBackend:
 
     def set_output_target(self, target: str):
         self.output_target = target
+
+    def is_recording_enabled(self) -> bool:
+        return self.recording_enabled
+
+    def set_recording_enabled(self, enabled: bool):
+        """Toggle recording on/off. Starts/stops all channel recorders."""
+        self.recording_enabled = enabled
+        self._save_config()
+        if enabled:
+            print(f"  Soundboard: recording enabled")
+        else:
+            print(f"  Soundboard: recording disabled")
+            self.stop_all_recording()
 
     def get_output_target(self) -> str:
         return self.output_target
