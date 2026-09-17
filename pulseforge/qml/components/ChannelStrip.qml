@@ -289,3 +289,4 @@ Rectangle {
             strip.mainFaderValue = volume
         }
     }
+}

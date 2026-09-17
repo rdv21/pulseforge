@@ -24,10 +24,10 @@ DEFAULT_CONFIG = {
         "volume": 1.0,
         "muted": False,
         "monitor": False,
-        "gate":      {"threshold": -50.0, "enabled": True},
+        "gate":      {"threshold": -50.0, "enabled": True, "attack": 25.0, "hold": 300.0, "release": 200.0, "range": -25.0},
         "eq":        {"enabled": True, "bands": []},  # populated from preset
         "noise":     {"intensity": 50, "enabled": True},
-        "compressor": {"threshold": -20.0, "amount": 3.0, "enabled": True},
+        "compressor": {"threshold": -20.0, "amount": 3.0, "enabled": True, "attack": 3.0, "release": 250.0, "makeup": 0.0},
     },
     "stream": {
         "volume": 1.0,

@@ -167,6 +167,13 @@ def _friendly_source_name(name: str) -> str:
     # Insta360
     if "Insta360" in name:
         return "Insta360 Link Mono"
+    # SteamVR / Valve Index HMD audio
+    if "indexhmd" in name.lower() or "steamvr" in name.lower():
+        if "source" in name.lower() or "mic" in name.lower() or "input" in name.lower():
+            return "SteamVR HMD Mic"
+        return "SteamVR HMD Audio"
+    if "vridge" in name.lower():
+        return "SteamVR Audio"
     # Generic fallback — prettify the name
     pretty = name.replace("alsa_input.", "").replace("alsa_output.", "")
     pretty = pretty.replace("usb-", "").replace(".analog-stereo", "")
@@ -324,34 +331,31 @@ DEFAULT_GROUP = "aux"
 
 
 def create_virtual_sink(group: str, display_name: str = "") -> Optional[int]:
-    """Create a virtual sink using pactl module-null-sink if it doesn't exist.
+    """Create a virtual sink using pactl module-null-sink.
 
     Returns the node ID, or None on failure.
     """
     display = display_name or VIRTUAL_SINK_NAMES.get(group, f"PulseForge {group.capitalize()}")
     internal = _VIRTUAL_SINK_INTERNAL.get(group, group)
 
-    # Check if already exists
+    # Check if already exists (using pactl, not pw-cli — module-null-sink
+    # sinks live in the PulseAudio compat layer and aren't visible to pw-cli)
     existing = get_node_by_name(internal)
     if existing is not None:
         return existing
 
-    # Create using pactl load-module module-null-sink
-    # Note: sink_properties with spaces in description doesn't work reliably,
-    # so we use the internal name as description. The UI maps known names to friendly labels.
     display_no_spaces = display.replace(" ", "_")
     cmd = [
         "pactl", "load-module", "module-null-sink",
         f"sink_name={internal}",
         f"sink_properties=device.description={display_no_spaces}",
     ]
-    out = _run(cmd)
-    if out:
+    out = _run(cmd, timeout=5)
+    if out and out.strip():
         import time
         time.sleep(0.3)
         node_id = get_node_by_name(internal)
         if node_id is None:
-            # Retry once — PipeWire may need a moment to register the new sink
             time.sleep(0.3)
             node_id = get_node_by_name(internal)
         return node_id
@@ -371,23 +375,43 @@ def remove_node(node_id: int):
 
 
 def get_node_by_name(name: str) -> Optional[int]:
-    """Find a node ID by its name property using pw-cli."""
+    """Find a node ID by its name property.
+    Tries pw-cli first (native PipeWire nodes), falls back to pactl (PulseAudio compat sinks).
+    """
+    # Try pw-cli first (works for native PipeWire nodes like filter-chain sources)
     out = _run(["pw-cli", "list-objects", "Node"], timeout=10)
-    if not out:
-        return None
+    if out:
+        current_id = None
+        for line in out.split("\n"):
+            line = line.strip()
+            id_match = re.match(r"id\s+(\d+)", line)
+            if id_match:
+                current_id = int(id_match.group(1))
+                continue
+            if current_id is not None and f'name = "{name}"' in line:
+                return current_id
+            if current_id is not None and f"name = {name}" in line and "=" in line:
+                return current_id
 
-    current_id = None
-    for line in out.split("\n"):
-        line = line.strip()
-        id_match = re.match(r"id\s+(\d+)", line)
-        if id_match:
-            current_id = int(id_match.group(1))
-            continue
-        if current_id is not None and f'name = "{name}"' in line:
-            return current_id
-        # Also handle unquoted format
-        if current_id is not None and f"name = {name}" in line and "=" in line:
-            return current_id
+    # Fall back to pactl list sinks (module-null-sink created via PA compat)
+    # These sinks aren't visible to pw-cli, so check via pactl
+    out = _run(["pactl", "list", "short", "sinks"], timeout=5)
+    if out:
+        for line in out.split("\n"):
+            parts = line.split("\t")
+            if len(parts) >= 2 and parts[1] == name:
+                # Return the pactl sink index as a stand-in ID.
+                # This is NOT the pw-cli node ID, but it's truthy and unique.
+                return int(parts[0])
+
+    # Also check sources (for mic.processed etc)
+    out = _run(["pactl", "list", "short", "sources"], timeout=5)
+    if out:
+        for line in out.split("\n"):
+            parts = line.split("\t")
+            if len(parts) >= 2 and parts[1] == name:
+                return int(parts[0])
+
     return None
 
 
@@ -805,23 +829,51 @@ def _pw_cli_get_node_id(node_name: str) -> Optional[int]:
 
 
 def destroy_all_pulseforge_sinks():
-    """Destroy all PulseForge virtual sink nodes."""
-    out = _run(["pactl", "list", "short", "sinks"], timeout=5)
+    """Destroy all PulseForge virtual sink nodes.
+    Uses pactl unload-module (reliable) instead of pw-cli destroy (racy).
+    Falls back to pw-cli destroy if module unload fails."""
+    out = _run(["pactl", "list", "sinks"], timeout=5)
     if not out:
         return
+    # Parse full pactl list sinks output to get sink name + owner module
+    current_name = None
+    current_module = None
     for line in out.split("\n"):
-        parts = line.split("\t")
-        if len(parts) >= 2 and "pulseforge" in parts[1]:
-            name = parts[1]
-            # Use pw-cli to get the real node ID (not the pactl object.serial)
-            node_id = _pw_cli_get_node_id(name)
+        stripped = line.strip()
+        if stripped.startswith("Name:"):
+            current_name = stripped.split(":")[-1].strip()
+            current_module = None
+        elif stripped.startswith("Owner Module:"):
+            try:
+                current_module = int(stripped.split(":")[-1].strip())
+            except (ValueError, IndexError):
+                current_module = None
+        elif stripped.startswith("Sink #") or (current_name and current_module is not None and stripped == ""):
+            if current_name and "pulseforge" in current_name and current_module is not None:
+                result = _run(["pactl", "unload-module", str(current_module)], timeout=5)
+                if result is not None:
+                    print(f"  Cleanup: unloaded module {current_module} (sink {current_name})")
+                else:
+                    node_id = _pw_cli_get_node_id(current_name)
+                    if node_id is not None:
+                        _run(["pw-cli", "destroy", str(node_id)])
+                        print(f"  Cleanup: destroyed sink {current_name} (pw-cli id {node_id})")
+                    else:
+                        print(f"  Cleanup: could not remove sink {current_name}")
+            current_name = None
+            current_module = None
+    # Handle the last sink if output doesn't end with blank line
+    if current_name and "pulseforge" in current_name and current_module is not None:
+        result = _run(["pactl", "unload-module", str(current_module)], timeout=5)
+        if result is not None:
+            print(f"  Cleanup: unloaded module {current_module} (sink {current_name})")
+        else:
+            node_id = _pw_cli_get_node_id(current_name)
             if node_id is not None:
                 _run(["pw-cli", "destroy", str(node_id)])
-                print(f"  Cleanup: destroyed sink {name} (pw-cli id {node_id})")
+                print(f"  Cleanup: destroyed sink {current_name} (pw-cli id {node_id})")
             else:
-                print(f"  Cleanup: could not find pw-cli id for sink {name}")
-
-
+                print(f"  Cleanup: could not remove sink {current_name}")
 def destroy_all_pulseforge_sources():
     """Destroy all PulseForge virtual source nodes (e.g. mic.processed)."""
     out = _run(["pactl", "list", "short", "sources"], timeout=5)

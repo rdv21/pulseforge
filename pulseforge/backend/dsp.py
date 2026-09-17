@@ -38,31 +38,58 @@ class GateProcessor:
     """
 
     def __init__(self, threshold_db: float = -35.0, enabled: bool = True,
-                 attack_ms: float = 10.0, hold_ms: float = 120.0, release_ms: float = 150.0,
-                 range_db: float = -60.0):  # kept for API compat; range is hardcoded to 0.0
+                 attack_ms: float = 25.0, hold_ms: float = 300.0, release_ms: float = 200.0,
+                 range_db: float = -25.0):
         # RMS-based detection: speech RMS is ~12dB below peak, so lower
         # the RMS threshold by 12dB to match the same perceptual opening point.
         self._rms_offset_db = -12.0
         self.threshold = _db_to_linear(threshold_db + self._rms_offset_db)
         self._gate_open = False
         self.enabled = enabled
-        self.range = 0.0  # fully close — no signal leaks when gate is shut
+        # Range: how much the gate attenuates when closed.
+        # -25dB = strong attenuation but not dead silence (natural breath ambience)
+        # 0.0 = complete cutoff (unnatural, causes abrupt fadeouts)
+        self.range = _db_to_linear(range_db)  # e.g. -25dB → ~0.056
+        self._range_db = range_db
         self._attack_ms = attack_ms
         self._hold_ms = hold_ms
         self._release_ms = release_ms
         self._attack_samples = max(1, int(attack_ms * 0.001 * SAMPLE_RATE))
         self._hold_samples = int(hold_ms * 0.001 * SAMPLE_RATE)
         self._release_samples = max(1, int(release_ms * 0.001 * SAMPLE_RATE))
-        self._gain = 0.0  # start gated
-        self._target_gain = 0.0
+        self._gain = self.range  # start gated (at range, not 0)
+        self._target_gain = self.range
         self._hold_counter = 0
         self._ramp_per_sample = 0.0  # how much gain changes per sample
+        # Pre-allocated buffers — reused across process() calls
+        self._gain_curve = np.empty(480, dtype=np.float32)
+        self._indices = np.arange(480, dtype=np.float32)
 
     def set_threshold(self, threshold_db: float):
         self.threshold = _db_to_linear(threshold_db + self._rms_offset_db)
 
     def set_enabled(self, enabled: bool):
         self.enabled = enabled
+
+    def set_range(self, range_db: float):
+        """Set gate floor — how much attenuation when closed (dB below unity)."""
+        self._range_db = range_db
+        self.range = _db_to_linear(range_db)
+        # If currently gated, update current gain to new floor
+        if self._target_gain <= self.range * 1.1:
+            self._gain = self.range
+
+    def set_attack(self, attack_ms: float):
+        self._attack_ms = attack_ms
+        self._attack_samples = max(1, int(attack_ms * 0.001 * SAMPLE_RATE))
+
+    def set_hold(self, hold_ms: float):
+        self._hold_ms = hold_ms
+        self._hold_samples = int(hold_ms * 0.001 * SAMPLE_RATE)
+
+    def set_release(self, release_ms: float):
+        self._release_ms = release_ms
+        self._release_samples = max(1, int(release_ms * 0.001 * SAMPLE_RATE))
 
     def process(self, block: np.ndarray) -> np.ndarray:
         if not self.enabled:
@@ -94,28 +121,35 @@ class GateProcessor:
 
         # Linear ramp from current gain to target over ramp_len samples
         block_len = len(block)
+        # Ensure pre-allocated buffers are large enough
+        if block_len > len(self._gain_curve):
+            self._gain_curve = np.empty(block_len, dtype=np.float32)
+            self._indices = np.arange(block_len, dtype=np.float32)
+        gc = self._gain_curve[:block_len]
         if ramp_len <= 1:
             self._gain = self._target_gain
-            gain_curve = np.full(block_len, self._gain, dtype=np.float32)
+            gc.fill(self._gain)
         else:
-            # Compute per-sample gain using linear interpolation
+            # Compute per-sample gain using linear interpolation (in-place on pre-alloc'd buffer)
             start_gain = self._gain
             delta = (self._target_gain - start_gain) / ramp_len
-            # Generate ramp for this block
-            indices = np.arange(block_len, dtype=np.float32)
-            gain_curve = start_gain + delta * indices
+            # Generate ramp using pre-allocated indices
+            idx = self._indices[:block_len]
+            np.multiply(delta, idx, out=gc)
+            gc += start_gain
             # Clamp to target if we've reached it within this block
             if delta > 0:
-                gain_curve = np.minimum(gain_curve, self._target_gain)
+                np.minimum(gc, self._target_gain, out=gc)
             else:
-                gain_curve = np.maximum(gain_curve, self._target_gain)
+                np.maximum(gc, self._target_gain, out=gc)
             # Update _gain to where we end up after this block
-            self._gain = float(gain_curve[-1])
+            self._gain = float(gc[-1])
 
         if not np.isfinite(self._gain):
             self._gain = 1.0
 
-        return block * gain_curve.astype(np.float32)
+        # block * gc creates a NEW array (numpy binary op) — safe to return
+        return block * gc
 
 
 # ─── Biquad Peaking Filter (for EQ) ────────────────────────────────
@@ -234,6 +268,9 @@ class BiquadPeak:
         self._set_params(freq, gain_db, q, sample_rate)
         self._x1l = self._x2l = self._y1l = self._y2l = 0.0
         self._x1r = self._x2r = self._y1r = self._y2r = 0.0
+        # Pre-allocated work buffers — reused across process() calls to reduce allocation churn
+        self._ff_buf = np.empty(480, dtype=np.float32)
+        self._out_buf = np.empty(480, dtype=np.float32)
 
     def _set_params(self, freq: float, gain_db: float, q: float, sr: int):
         w0 = 2.0 * np.pi * freq / sr
@@ -264,20 +301,28 @@ class BiquadPeak:
         b0, b1, b2 = self._b0, self._b1, self._b2
         a1, a2 = self._a1, self._a2
         x1, x2, y1, y2 = state
+        blen = len(block)
+
+        # Ensure pre-allocated buffers are large enough (normally always 480)
+        if blen > len(self._ff_buf):
+            self._ff_buf = np.empty(blen, dtype=np.float32)
+            self._out_buf = np.empty(blen, dtype=np.float32)
 
         # Vectorized feed-forward: b0*x[n] + b1*x[n-1] + b2*x[n-2]
-        ff = b0 * block
+        # Write into pre-allocated buffer instead of creating new array
+        ff = self._ff_buf[:blen]
+        np.multiply(block, b0, out=ff)
         ff[1:] += b1 * block[:-1]
-        if len(block) > 1:
+        if blen > 1:
             ff[2:] += b2 * block[:-2]
         # Fix first two samples with saved state
         ff[0] += b1 * x1 + b2 * x2
-        if len(block) > 1:
+        if blen > 1:
             ff[1] += b2 * x1
 
         # Recursive feedback (must be sequential — IIR)
-        out = np.empty_like(block)
-        for i in range(len(block)):
+        out = self._out_buf[:blen]
+        for i in range(blen):
             y = ff[i] - a1 * y1 - a2 * y2
             out[i] = y
             y2 = y1
@@ -371,6 +416,8 @@ class CompressorProcessor:
         self._release_coef = np.exp(-BLOCK / (max(release_ms, 0.1) * 0.001 * SAMPLE_RATE))
         self._envelope = 0.0
         self._gain = 1.0
+        # Pre-allocated output buffer — reused to avoid per-call allocation
+        self._out_buf = np.empty(480, dtype=np.float32)
 
     def set_params(self, threshold_db: float = None, ratio: float = None,
                    attack_ms: float = None, release_ms: float = None,
@@ -414,7 +461,11 @@ class CompressorProcessor:
         if not np.isfinite(self._gain):
             self._gain = 1.0
 
-        return block * np.float32(self._gain)
+        blen = len(block)
+        if blen > len(self._out_buf):
+            self._out_buf = np.empty(blen, dtype=np.float32)
+        np.multiply(block, np.float32(self._gain), out=self._out_buf[:blen])
+        return self._out_buf[:blen]
 
 
 # ─── Noise Suppression (speexdsp via ctypes) ────────────────────────
@@ -572,6 +623,152 @@ class SpeexNoiseProcessor:
         """Clean up speex state."""
         if self._lib and self._state:
             self._lib.speex_preprocess_state_destroy(self._state)
+            self._state = None
+
+
+# ─── RNNoise VAD Gate (transient suppression) ──────────────────────
+
+class RNNoiseVadGate:
+    """RNNoise-based transient noise gate.
+
+    Uses RNNoise's VAD (voice activity detection) probability as a smooth
+    gain multiplier: output = input * vad_prob^scale
+
+    This is much better than wet/dry mix for transient sounds:
+    - Keyboard clicks, table taps → low VAD probability → suppressed
+    - Speech → high VAD probability → passes through
+    - No robotic artifacts (no wet signal mixing, just gain)
+
+    The `intensity` scales how aggressively the VAD probability is applied:
+    - 0% = no gating (pass through)
+    - 100% = full VAD gate (output = input * vad_prob)
+    """
+
+    FRAME_SIZE = 480
+
+    def __init__(self, intensity: float = 50.0, enabled: bool = True):
+        self.enabled = enabled
+        self._intensity = intensity
+
+        self._lib = None
+        self._state = None
+        self._in_buf = None
+        self._out_buf = None
+
+        # Smoothing: exponential moving average of VAD prob for natural transitions
+        self._vad_smooth = 0.0
+        self._smoothing = 0.06  # lower = smoother, keeps gate open through brief dips
+
+        # Pre-gain: RNNoise needs signal around -20 to 0dB to detect voice.
+        # Dynamic mics sit at -40 to -60dB, so boost before VAD detection,
+        # then restore original level after.
+        self._pre_gain = 16.0   # +24dB before RNNoise
+        self._post_atten = 0.0625  # -24dB after (restore original level)
+
+        # Pre-allocated output buffer for gain application
+        self._gain_buf = np.empty(self.FRAME_SIZE, dtype=np.float32)
+
+        self._init_lib()
+
+    def _init_lib(self):
+        try:
+            lib_path = ctypes.util.find_library("rnnoise")
+            if lib_path is None:
+                for p in ["/usr/lib/librnnoise.so", "/usr/lib/librnnoise.so.0"]:
+                    if Path(p).exists():
+                        lib_path = p
+                        break
+            if lib_path is None:
+                print("  RNNoiseVadGate: library not found")
+                return
+
+            self._lib = ctypes.CDLL(lib_path)
+            self._lib.rnnoise_get_frame_size.restype = ctypes.c_int
+            self._lib.rnnoise_get_frame_size.argtypes = []
+            frame_size = self._lib.rnnoise_get_frame_size()
+            if frame_size != self.FRAME_SIZE:
+                self.FRAME_SIZE = frame_size
+
+            self._lib.rnnoise_create.restype = ctypes.c_void_p
+            self._lib.rnnoise_create.argtypes = [ctypes.c_void_p]
+            self._lib.rnnoise_process_frame.restype = ctypes.c_float
+            self._lib.rnnoise_process_frame.argtypes = [
+                ctypes.c_void_p, ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_float)
+            ]
+            self._lib.rnnoise_destroy.argtypes = [ctypes.c_void_p]
+
+            self._state = self._lib.rnnoise_create(None)
+            self._in_buf = (ctypes.c_float * self.FRAME_SIZE)()
+            self._out_buf = (ctypes.c_float * self.FRAME_SIZE)()
+            self._in_np = np.ctypeslib.as_array(self._in_buf)
+            self._out_np = np.ctypeslib.as_array(self._out_buf)
+            print(f"  RNNoiseVadGate: initialized (frame_size={self.FRAME_SIZE})")
+        except Exception as e:
+            print(f"  RNNoiseVadGate: init failed: {e}")
+            self._lib = None
+
+    def set_intensity(self, intensity: float):
+        self._intensity = max(0.0, min(100.0, intensity))
+
+    def set_enabled(self, enabled: bool):
+        self.enabled = enabled
+
+    def process(self, block: np.ndarray) -> np.ndarray:
+        if not self.enabled or self._lib is None or not self._state:
+            return block
+        if len(block) != self.FRAME_SIZE:
+            return block
+
+        block = np.nan_to_num(block, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # Pre-gain so RNNoise can detect voice on quiet dynamic mics
+        vad_in = block * np.float32(self._pre_gain)
+        if not np.isfinite(vad_in).all():
+            vad_in = np.zeros_like(vad_in)
+
+        if block.ndim == 1:
+            self._in_np[:] = vad_in
+            vad_prob = self._lib.rnnoise_process_frame(
+                self._state, self._out_buf, self._in_buf
+            )
+        else:
+            # Stereo — average VAD across channels
+            vad_probs = []
+            for ch in range(vad_in.shape[1]):
+                self._in_np[:] = vad_in[:, ch]
+                vp = self._lib.rnnoise_process_frame(
+                    self._state, self._out_buf, self._in_buf
+                )
+                vad_probs.append(vp)
+            vad_prob = sum(vad_probs) / len(vad_probs)
+
+        # Smooth the VAD probability for natural transitions
+        self._vad_smooth = self._smoothing * vad_prob + (1 - self._smoothing) * self._vad_smooth
+        vad = max(0.0, min(1.0, self._vad_smooth))
+
+        # Scale VAD by intensity using a gentle curve:
+        # gain = vad^(0.01 + intensity/100 * 0.49)
+        # At 0%: gain = vad^0.01 ≈ 1.0 (pass through)
+        # At 50%: gain = vad^0.26 (gentle gating)
+        # At 100%: gain = vad^0.50 (moderate — mumbled voice still audible)
+        # This means:
+        #   vad=0.0 (noise) → gain=0.0 (gated) at any intensity
+        #   vad=0.3 (mumble) → gain=0.55 at 100% (audible, not silenced)
+        #   vad=0.9 (speech) → gain=0.95 at 100% (passes through)
+        exponent = 0.01 + (self._intensity / 100.0) * 0.49
+        gain = max(0.0, vad) ** exponent
+
+        if not np.isfinite(gain):
+            gain = 1.0
+
+        # Apply gain to the ORIGINAL signal (not the pre-gained version)
+        # Returns view into _gain_buf — safe because processing loop consumes it before next call
+        np.multiply(block, np.float32(gain), out=self._gain_buf[:len(block)])
+        return self._gain_buf[:len(block)]
+
+    def destroy(self):
+        if self._lib and self._state:
+            self._lib.rnnoise_destroy(self._state)
             self._state = None
 
 

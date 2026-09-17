@@ -80,6 +80,16 @@ class PulseForgeBridge(QObject):
         self._fader_sync_timer.setInterval(2000)
         self._fader_sync_timer.timeout.connect(self._sync_faders)
 
+        # Device polling timer — detects hotplug/unplug, stale loopbacks, vrserver lifecycle
+        self._device_timer = QTimer(self)
+        self._device_timer.setInterval(5000)
+        self._device_timer.timeout.connect(self._check_devices)
+
+        # vrserver lifecycle tracking
+        self._vrserver_was_running = False
+        self._vrserver_audio_snapshot: Optional[dict] = None
+        self._vrserver_recovering = False
+
     # ─── Lifecycle ───
 
     def start(self):
@@ -95,6 +105,7 @@ class PulseForgeBridge(QObject):
         self._app_timer.start()
         self._route_timer.start()
         self._fader_sync_timer.start()
+        self._device_timer.start()
 
         self.statusMessage.emit("PulseForge ready")
 
@@ -104,6 +115,7 @@ class PulseForgeBridge(QObject):
         self._app_timer.stop()
         self._route_timer.stop()
         self._fader_sync_timer.stop()
+        self._device_timer.stop()
         self._vu_poller.stop()
         self._mic_chain.stop()
         get_manager().stop_all()
@@ -139,7 +151,26 @@ class PulseForgeBridge(QObject):
         pw.destroy_all_pulseforge_sources()
         # Destroy virtual sinks
         pw.destroy_all_pulseforge_sinks()
-        time.sleep(1.0)
+
+        # Wait for PipeWire to fully deregister destroyed nodes.
+        # The cleanup uses pactl unload-module / pw-cli destroy, but PipeWire
+        # keeps stale nodes in pw-cli list-objects for a few seconds.
+        # If we don't wait, create_virtual_sink sees the stale node and skips.
+        max_wait = 5.0
+        waited = 0.0
+        while waited < max_wait:
+            stale = False
+            for group in pw.VIRTUAL_SINK_NAMES:
+                internal = pw._VIRTUAL_SINK_INTERNAL.get(group, group)
+                if pw.get_node_by_name(internal) is not None:
+                    stale = True
+                    break
+            if not stale:
+                break
+            time.sleep(0.5)
+            waited += 0.5
+        if stale:
+            print(f"  Cleanup: WARNING - stale nodes still present after {max_wait}s wait")
 
         # ─── Create fresh virtual sinks ───
         self._group_sink_ids = pw.create_all_virtual_sinks()
@@ -188,7 +219,8 @@ class PulseForgeBridge(QObject):
             if monitor:
                 exists = any(src == monitor and sink == gaming_internal for _, src, sink in existing_loopbacks)
                 if not exists:
-                    mod_idx = pw.create_loopback(monitor, gaming_internal)
+                    mod_idx = pw.create_loopback(monitor, gaming_internal,
+                                                      initial_volume=0.0, ramp_to=1.0, ramp_ms=150)
                     if mod_idx is not None:
                         print(f"  Loopback: {monitor} → {gaming_internal}")
                 else:
@@ -233,9 +265,10 @@ class PulseForgeBridge(QObject):
                 group_monitor = pw.get_sink_monitor_source(group_internal) or f"{group_internal}.monitor"
                 already = any(src == group_monitor and sink == stream_sink for _, src, sink in existing_loopbacks)
                 if not already:
-                    mod_idx = pw.create_loopback(group_monitor, stream_sink)
+                    stream_vol = group_cfg.get("stream_volume", 1.0)
+                    mod_idx = pw.create_loopback(group_monitor, stream_sink,
+                                                      initial_volume=0.0, ramp_to=stream_vol, ramp_ms=150)
                     if mod_idx is not None:
-                        stream_vol = group_cfg.get("stream_volume", 1.0)
                         self._set_stream_loopback_volume(group, mod_idx, stream_vol)
                         print(f"  Stream loopback: {group} → {stream_sink} (vol: {stream_vol:.2f})")
 
@@ -246,27 +279,42 @@ class PulseForgeBridge(QObject):
         for _, src, sink in existing:
             if src == gaming_monitor and sink == hw_sink_name:
                 return
-        pw.create_loopback(gaming_monitor, hw_sink_name)
+        pw.create_loopback(gaming_monitor, hw_sink_name,
+                            initial_volume=0.0, ramp_to=1.0, ramp_ms=150)
 
     def _restore_mic_stream(self):
-        """Restore mic → stream and mic → monitor loopbacks if enabled in config."""
+        """Restore mic → stream and mic → monitor loopbacks if enabled in config.
+        Retries for up to 3s since pulseforge.mic.processed takes a moment to appear.
+        """
         mic_source = "pulseforge.mic.processed"
+
+        def _wait_and_create(source_name, sink_name, label):
+            """Retry loopback creation until the source node exists."""
+            import threading
+            def _try():
+                for attempt in range(15):  # 3s total, 200ms intervals
+                    existing = pw.list_loopbacks()
+                    already = any(src == source_name and sink == sink_name for _, src, sink in existing)
+                    if already:
+                        return
+                    # Check if source exists
+                    sources = pw.list_sources()
+                    if any(s.name == source_name for s in sources):
+                        pw.create_loopback(source_name, sink_name,
+                                            initial_volume=0.0, ramp_to=1.0, ramp_ms=150)
+                        print(f"  {label}: {source_name} → {sink_name} (attempt {attempt+1})")
+                        return
+                    time.sleep(0.2)
+                print(f"  {label}: source {source_name} never appeared, giving up")
+            threading.Thread(target=_try, daemon=True).start()
+
         # Restore mic → stream
         if self._config.get("mic", {}).get("stream_enabled", False):
-            stream_sink = "pulseforge_stream"
-            existing = pw.list_loopbacks()
-            already = any(src == mic_source and sink == stream_sink for _, src, sink in existing)
-            if not already:
-                pw.create_loopback(mic_source, stream_sink)
-                print(f"  Mic stream restored: {mic_source} → {stream_sink}")
+            _wait_and_create(mic_source, "pulseforge_stream", "Mic stream restored")
+
         # Restore mic → monitor (gaming)
         if self._config.get("mic", {}).get("monitor", False):
-            gaming_sink = "pulseforge_gaming"
-            existing = pw.list_loopbacks()
-            already = any(src == mic_source and sink == gaming_sink for _, src, sink in existing)
-            if not already:
-                pw.create_loopback(mic_source, gaming_sink)
-                print(f"  Mic monitor restored: {mic_source} → {gaming_sink}")
+            _wait_and_create(mic_source, "pulseforge_gaming", "Mic monitor restored")
 
     def _start_mic_chain(self):
         """Start the native Python mic processing chain."""
@@ -274,8 +322,14 @@ class PulseForgeBridge(QObject):
 
         # Apply saved settings to the chain before starting
         gate_cfg = cfg.get("gate", {})
-        self._mic_chain.gate.set_threshold(gate_cfg.get("threshold", -50.0))
-        self._mic_chain.gate.set_enabled(gate_cfg.get("enabled", True))
+        self._mic_chain.set_gate(
+            threshold_db=gate_cfg.get("threshold", -50.0),
+            enabled=gate_cfg.get("enabled", True),
+            attack_ms=gate_cfg.get("attack", 25.0),
+            hold_ms=gate_cfg.get("hold", 300.0),
+            release_ms=gate_cfg.get("release", 200.0),
+            range_db=gate_cfg.get("range", -25.0),
+        )
 
         eq_cfg = cfg.get("eq", {})
         eq_bands = eq_cfg.get("bands", [])
@@ -349,10 +403,10 @@ class PulseForgeBridge(QObject):
         main_vol = group_cfg.get("output_volume", 1.0)
         main_peak = peak * main_vol
         
-        # Stream VU: what enters the stream mix (pre-stream-fader = raw monitor level)
-        # Shows the signal available to the stream, before stream fader is applied
+        # Stream VU: post-stream-fader — what OBS/viewers actually capture
         if group_cfg.get("stream_enabled", False):
-            stream_peak = peak
+            stream_vol = group_cfg.get("stream_volume", 1.0)
+            stream_peak = peak * stream_vol
         else:
             stream_peak = 0.0
         self.channelVuUpdated.emit(channel, float(main_peak), float(stream_peak))
@@ -397,6 +451,234 @@ class PulseForgeBridge(QObject):
         sources = pw.list_sources()
         self.devicesChanged.emit()
 
+    # ─── Device Polling & SteamVR Resilience ───
+
+    def _check_devices(self):
+        """Polling tick: detect device changes, verify loopbacks, track vrserver."""
+        try:
+            self._check_vrserver_lifecycle()
+            msg = self._verify_gaming_output()
+            if msg:
+                self.statusMessage.emit(msg)
+            self._refresh_devices()
+        except Exception as e:
+            print(f"  Device check error: {e}")
+
+    def _verify_gaming_output(self) -> Optional[str]:
+        """Verify the gaming -> hardware loopback target still exists.
+        If the hardware sink disappeared (e.g. USB device unplugged, SteamVR cleaned up),
+        find a new one and re-establish the link.
+
+        Returns a status message string if action was taken, or None if all good.
+        Caller is responsible for emitting any signals on the correct thread.
+        """
+        hw_output = self._config.get("devices", {}).get("output", "")
+        if not hw_output:
+            return None
+
+        sinks = pw.list_sinks()
+        sink_names = {s.name for s in sinks}
+
+        if hw_output in sink_names:
+            # Target exists — check if the loopback itself still exists
+            gaming_internal = pw._VIRTUAL_SINK_INTERNAL["gaming"]
+            gaming_monitor = pw.get_sink_monitor_source(gaming_internal) or f"{gaming_internal}.monitor"
+            loopback_exists = any(
+                src == gaming_monitor and sink == hw_output
+                for _, src, sink in pw.list_loopbacks()
+            )
+            if not loopback_exists:
+                print(f"  Device check: gaming -> {hw_output} loopback missing, recreating")
+                self._create_gaming_to_hw_loopback(hw_output)
+            return None
+
+        # Hardware sink is gone — find a replacement
+        new_hw = None
+        for s in sinks:
+            if not s.name.startswith("pulseforge"):
+                new_hw = s.name
+                break
+
+        if new_hw:
+            print(f"  Device check: output '{hw_output}' gone, switching to '{new_hw}'")
+            sink_index = pw.get_sink_index_by_name(new_hw)
+            if sink_index is not None:
+                pw.set_default_sink(sink_index)
+            self._create_gaming_to_hw_loopback(new_hw)
+            self._config["devices"]["output"] = new_hw
+            config.save_config(self._config)
+            friendly = pw._friendly_source_name(new_hw)
+            return f"Output restored -> {friendly}"
+        else:
+            print(f"  Device check: output '{hw_output}' gone, no replacement found")
+            return None
+
+    def _check_vrserver_lifecycle(self):
+        """Track vrserver process: snapshot routing on start, restore on exit."""
+        try:
+            r = subprocess.run(["pgrep", "-f", "vrserver"],
+                              capture_output=True, text=True, timeout=2)
+            vrserver_running = bool(r.stdout.strip())
+        except Exception:
+            vrserver_running = False
+
+        if vrserver_running and not self._vrserver_was_running and not self._vrserver_recovering:
+            # vrserver just started — snapshot current audio state
+            print("  SteamVR: vrserver detected, snapshotting audio state")
+            self._vrserver_audio_snapshot = {
+                "output": self._config.get("devices", {}).get("output", ""),
+                "input": self._config.get("devices", {}).get("input", ""),
+                "loopbacks": pw.list_loopbacks(),
+            }
+            self._vrserver_was_running = True
+
+        elif not vrserver_running and self._vrserver_was_running:
+            # vrserver just exited — restore audio graph
+            print("  SteamVR: vrserver exited, restoring audio routing")
+            self._vrserver_was_running = False
+            # Defer recovery to a background thread to avoid blocking the Qt event loop
+            import threading
+            self._vrserver_recovering = True
+            def _recover():
+                try:
+                    self._on_vrserver_exit()
+                finally:
+                    self._vrserver_recovering = False
+            threading.Thread(target=_recover, daemon=True).start()
+
+    def _on_vrserver_exit(self):
+        """Restore audio graph after vrserver exits.
+
+        Runs in a background thread to avoid blocking the Qt event loop.
+        vrserver leaves phantom PipeWire nodes and may have broken our loopbacks.
+        We rebuild the gaming -> hardware path and re-route apps.
+        """
+        import time
+
+        # Give PipeWire a moment to clean up vrserver's nodes
+        time.sleep(1.0)
+
+        # Restore pre-VR output AND input devices from snapshot
+        snapshot = self._vrserver_audio_snapshot or {}
+        pre_vr_output = snapshot.get("output", "")
+        pre_vr_input = snapshot.get("input", "")
+
+        sinks = pw.list_sinks()
+        sink_names = {s.name for s in sinks}
+
+        # --- Restore output device ---
+        if pre_vr_output and pre_vr_output in sink_names:
+            # Full reroute: remove stale loopbacks, set default, create fresh loopback
+            gaming_internal = pw._VIRTUAL_SINK_INTERNAL["gaming"]
+            gaming_monitor = pw.get_sink_monitor_source(gaming_internal) or f"{gaming_internal}.monitor"
+            # Remove any loopbacks from gaming -> wrong targets (phantom VR sinks, etc.)
+            for idx, src, sink in pw.list_loopbacks():
+                if src == gaming_monitor and sink != pre_vr_output:
+                    pw.remove_loopback(idx)
+                    print(f"  SteamVR recovery: removed stale gaming -> {sink} loopback")
+            # Set the hardware device as default
+            sink_index = pw.get_sink_index_by_name(pre_vr_output)
+            if sink_index is not None:
+                pw.set_default_sink(sink_index)
+            # Restore config and recreate the correct loopback
+            self._config["devices"]["output"] = pre_vr_output
+            config.save_config(self._config)
+            self._create_gaming_to_hw_loopback(pre_vr_output)
+            print(f"  SteamVR recovery: output restored -> {pre_vr_output}")
+
+        # --- Restore input device ---
+        if pre_vr_input:
+            sources = pw.list_sources()
+            pre_vr_source = next((s for s in sources if s.name == pre_vr_input), None)
+            if pre_vr_source is not None:
+                pw.set_default_source(pre_vr_source.id)
+                self._mic_chain.set_input_device(pre_vr_input)
+                self._config["devices"]["input"] = pre_vr_input
+                config.save_config(self._config)
+                print(f"  SteamVR recovery: input restored -> {pre_vr_input}")
+            else:
+                # Saved input device no longer exists — fall back to auto-detect
+                print(f"  SteamVR recovery: input '{pre_vr_input}' no longer exists, auto-detecting")
+                self._mic_chain.redirect_capture()
+        else:
+            self._mic_chain.redirect_capture()
+
+        # Re-create any missing channel loopbacks (game/chat/media/aux -> gaming)
+        gaming_internal = pw._VIRTUAL_SINK_INTERNAL["gaming"]
+        existing_loopbacks = pw.list_loopbacks()
+        for group in ["game", "chat", "media", "aux"]:
+            group_internal = pw._VIRTUAL_SINK_INTERNAL.get(group, group)
+            monitor = pw.get_sink_monitor_source(group_internal)
+            if not monitor:
+                continue
+            exists = any(src == monitor and sink == gaming_internal for _, src, sink in existing_loopbacks)
+            if not exists:
+                saved_vol = self._config.get("groups", {}).get(group, {}).get("output_volume", 1.0)
+                mod_idx = pw.create_loopback(monitor, gaming_internal,
+                                              initial_volume=0.0, ramp_to=saved_vol, ramp_ms=150)
+                if mod_idx is not None:
+                    self._channel_loopback_mods[group] = mod_idx
+                    print(f"  SteamVR recovery: restored {group} -> gaming loopback")
+
+        # Ensure default sink is our gaming sink (not a VR phantom)
+        gaming_id = self._group_sink_ids.get("gaming")
+        if gaming_id:
+            pw.set_default_sink(gaming_id)
+
+        # Re-route any apps that drifted to hardware/phantom sinks back to their groups
+        # (subprocess-only, safe from thread)
+        from .backend import app_router
+        try:
+            app_router.route_new_apps_only()
+        except Exception:
+            pass
+
+        # Restore mic capture if it was disrupted (subprocess-only, safe from thread)
+        self._mic_chain.redirect_capture()
+
+        self._vrserver_audio_snapshot = None
+
+        # Emit UI signals on the main thread (Qt requires this)
+        from PySide6.QtCore import QTimer
+        final_msg = "SteamVR exited — audio routing restored"
+        QTimer.singleShot(0, lambda: (
+            self.devicesChanged.emit(),
+            self.statusMessage.emit(final_msg),
+        ))
+
+    @Slot()
+    def resyncAudioGraph(self):
+        """Manually trigger a full audio graph re-sync.
+
+        Exposed to QML as an 'oh shit' button -- rebuilds loopbacks,
+        re-routes apps, and restores mic capture. Useful if something
+        goes wrong outside of SteamVR (e.g. WirePlumber hiccup).
+        """
+        print("  Manual audio graph re-sync triggered")
+        msg = self._verify_gaming_output()
+
+        # Re-create missing channel loopbacks
+        gaming_internal = pw._VIRTUAL_SINK_INTERNAL["gaming"]
+        existing_loopbacks = pw.list_loopbacks()
+        for group in ["game", "chat", "media", "aux"]:
+            group_internal = pw._VIRTUAL_SINK_INTERNAL.get(group, group)
+            monitor = pw.get_sink_monitor_source(group_internal)
+            if not monitor:
+                continue
+            exists = any(src == monitor and sink == gaming_internal for _, src, sink in existing_loopbacks)
+            if not exists:
+                saved_vol = self._config.get("groups", {}).get(group, {}).get("output_volume", 1.0)
+                mod_idx = pw.create_loopback(monitor, gaming_internal,
+                                              initial_volume=0.0, ramp_to=saved_vol, ramp_ms=150)
+                if mod_idx is not None:
+                    self._channel_loopback_mods[group] = mod_idx
+                    print(f"  Re-sync: restored {group} → gaming loopback")
+
+        self._refresh_routing()
+        self._mic_chain.redirect_capture()
+        self._refresh_devices()
+        self.statusMessage.emit(msg or "Audio graph re-synced")
+
     def _refresh_apps(self):
         try:
             apps = app_router.list_all_apps()
@@ -418,6 +700,7 @@ class PulseForgeBridge(QObject):
     def getOutputDevices(self):
         sinks = pw.list_sinks()
         # Filter: show hardware + non-pulseforge sinks as output options
+        # Includes SteamVR HMD audio devices so users can route to the headset
         result = []
         saved = self._config.get("devices", {}).get("output", "")
         for s in sinks:
@@ -429,6 +712,7 @@ class PulseForgeBridge(QObject):
     @Slot(result='QVariant')
     def getInputDevices(self):
         sources = pw.list_sources()
+        # Includes SteamVR HMD mic so users can route VR mic input through PulseForge
         result = []
         saved = self._config.get("devices", {}).get("input", "")
         for s in sources:
@@ -592,12 +876,13 @@ class PulseForgeBridge(QObject):
             existing = pw.list_loopbacks()
             already = any(src == mic_source and sink == gaming_sink for _, src, sink in existing)
             if not already:
-                pw.create_loopback(mic_source, gaming_sink)
+                pw.create_loopback(mic_source, gaming_sink,
+                                    initial_volume=0.0, ramp_to=1.0, ramp_ms=150)
         else:
             mic_source = "pulseforge.mic.processed"
             for idx, src, sink in pw.list_loopbacks():
                 if src == mic_source:
-                    pw.remove_loopback(idx)
+                    pw.remove_loopback_ramped(idx, ramp_ms=100)
 
     @Slot(bool)
     def setMicStream(self, enabled: bool):
@@ -610,12 +895,13 @@ class PulseForgeBridge(QObject):
             existing = pw.list_loopbacks()
             already = any(src == mic_source and sink == stream_sink for _, src, sink in existing)
             if not already:
-                pw.create_loopback(mic_source, stream_sink)
+                pw.create_loopback(mic_source, stream_sink,
+                                    initial_volume=0.0, ramp_to=1.0, ramp_ms=150)
                 print(f"  Mic stream: {mic_source} → {stream_sink}")
         else:
             for idx, src, sink in pw.list_loopbacks():
                 if src == mic_source and sink == stream_sink:
-                    pw.remove_loopback(idx)
+                    pw.remove_loopback_ramped(idx, ramp_ms=100)
                     print(f"  Mic stream: removed {mic_source} → {stream_sink}")
 
     @Slot(float)
@@ -628,6 +914,30 @@ class PulseForgeBridge(QObject):
     def setGateEnabled(self, enabled: bool):
         self._mic_chain.set_gate(enabled=enabled)
         self._config["mic"]["gate"]["enabled"] = enabled
+        config.save_config(self._config)
+
+    @Slot(float)
+    def setGateRange(self, range_db: float):
+        self._mic_chain.set_gate(range_db=range_db)
+        self._config["mic"]["gate"]["range"] = range_db
+        config.save_config(self._config)
+
+    @Slot(float)
+    def setGateAttack(self, attack_ms: float):
+        self._mic_chain.set_gate(attack_ms=attack_ms)
+        self._config["mic"]["gate"]["attack"] = attack_ms
+        config.save_config(self._config)
+
+    @Slot(float)
+    def setGateHold(self, hold_ms: float):
+        self._mic_chain.set_gate(hold_ms=hold_ms)
+        self._config["mic"]["gate"]["hold"] = hold_ms
+        config.save_config(self._config)
+
+    @Slot(float)
+    def setGateRelease(self, release_ms: float):
+        self._mic_chain.set_gate(release_ms=release_ms)
+        self._config["mic"]["gate"]["release"] = release_ms
         config.save_config(self._config)
 
     @Slot(float)
@@ -736,6 +1046,10 @@ class PulseForgeBridge(QObject):
             "gate": {
                 "enabled": mic.get("gate", {}).get("enabled", True),
                 "threshold": mic.get("gate", {}).get("threshold", -35.0),
+                "attack": mic.get("gate", {}).get("attack", 25.0),
+                "hold": mic.get("gate", {}).get("hold", 300.0),
+                "release": mic.get("gate", {}).get("release", 200.0),
+                "range": mic.get("gate", {}).get("range", -25.0),
             },
             "noise": {
                 "enabled": mic.get("noise", {}).get("enabled", True),
@@ -817,11 +1131,12 @@ class PulseForgeBridge(QObject):
         if old_target:
             for idx, src, sink in pw.list_loopbacks():
                 if src == stream_monitor:
-                    pw.remove_loopback(idx)
+                    pw.remove_loopback_ramped(idx, ramp_ms=100)
 
         if name and name != "None" and node_id >= 0:
             # Create new loopback: stream monitor → target sink
-            pw.create_loopback(stream_monitor, name)
+            pw.create_loopback(stream_monitor, name,
+                                initial_volume=0.0, ramp_to=1.0, ramp_ms=150)
 
         self._config["devices"]["stream"] = name if name != "None" else None
         config.save_config(self._config)
