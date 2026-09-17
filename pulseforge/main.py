@@ -1361,6 +1361,7 @@ class PulseForgeBridge(QObject):
     def clearSoundSlot(self, page: int, index: int):
         """Clear a sound slot."""
         self._soundboard.clear_slot(page, index)
+        self.soundboardChanged.emit(page)
 
     @Slot(int, int)
     def playSound(self, page: int, index: int):

@@ -357,6 +357,41 @@ Window {
                             property string slotFile: ""
                             property bool isAssigned: false
 
+                            // Clear button (top-right corner, only for assigned slots)
+                            Rectangle {
+                                visible: isAssigned && !assignMode
+                                anchors.top: parent.top
+                                anchors.right: parent.right
+                                anchors.topMargin: 2
+                                anchors.rightMargin: 2
+                                width: 16
+                                height: 16
+                                radius: 8
+                                color: clearMA.containsMouse ? "#aa3333" : "#1a1a24"
+                                border.width: 1
+                                border.color: clearMA.containsMouse ? "#ff4444" : "#333340"
+                                z: 10
+
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: "✕"
+                                    font.pixelSize: 9
+                                    font.bold: true
+                                    color: clearMA.containsMouse ? "white" : "#7a7a88"
+                                }
+
+                                MouseArea {
+                                    id: clearMA
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        PulseForge.clearSoundSlot(sbWindow.currentPage, index)
+                                        loadSoundboard()
+                                    }
+                                }
+                            }
+
                             ColumnLayout {
                                 anchors.fill: parent
                                 anchors.margins: 8
