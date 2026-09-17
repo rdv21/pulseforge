@@ -7,10 +7,11 @@ import "components"
 Window {
     id: micWindow
     visible: false
+    // Dynamic height: fit content, but never exceed 90% of screen
     width: 600
-    height: 760
+    height: Math.min(860, Screen.desktopAvailableHeight * 0.9)
     minimumWidth: 540
-    minimumHeight: 680
+    minimumHeight: 600
     title: "PulseForge — Mic Settings"
     color: "#0d0d14"
     flags: Qt.Window | Qt.WindowStaysOnTopHint
@@ -442,15 +443,18 @@ Window {
                 }
             }
 
-            // ═══ Gate + Compressor (side by side) ═══
+            // ═══ Gate + Compressor (side by side, equal height) ═══
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 8
+                // Both cards fill to the tallest card's height
+                Layout.minimumHeight: Math.max(gateCard.implicitHeight, compCard.implicitHeight)
 
                 ProcessingCard {
                     id: gateCard
                     title: "Gate"
                     Layout.fillWidth: true
+                    Layout.fillHeight: true
                     sliderLabel: "Threshold"
                     sliderValue: -35
                     sliderUnit: " dB"
@@ -468,6 +472,7 @@ Window {
                     id: compCard
                     title: "Compressor"
                     Layout.fillWidth: true
+                    Layout.fillHeight: true
                     sliderLabel: "Threshold"
                     sliderUnit: " dB"
                     sliderMin: -60
