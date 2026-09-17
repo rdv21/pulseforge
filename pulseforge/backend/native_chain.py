@@ -1,17 +1,14 @@
 """Native Python mic processing chain.
 
 Captures audio from the hardware mic via pw-cat --record, processes it
-through AFX noise removal (or RNNoise fallback) → gate → EQ → compressor
-in Python, and plays it back via pw-cat --playback to create the
+through NVIDIA AFX noise removal → gate → EQ → compressor in Python,
+and plays it back via pw-cat --playback to create the
 pulseforge.mic.processed node.
-
-NVIDIA AFX (Audio Effects SDK) provides AI-powered noise removal on RTX GPUs.
-Falls back to RNNoiseVadGate if AFX SDK is not available.
 
 All parameters update in real-time — no process restarts needed.
 
 Audio format: float32, 48kHz, mono.
-Buffer size: 480 samples (10ms) — matches AFX/RNNoise frame size.
+Buffer size: 480 samples (10ms) — matches AFX frame size.
 """
 import subprocess
 import threading
@@ -26,7 +23,7 @@ from .process_manager import get_manager
 # Audio settings
 SAMPLE_RATE = 48000
 CHANNELS = 1  # Hardware mic is mono — capture mono, process mono, output mono
-BUFFER_SAMPLES = 480  # 10ms — matches RNNoise frame size
+BUFFER_SAMPLES = 480  # 10ms — matches AFX frame size
 BUFFER_BYTES = BUFFER_SAMPLES * CHANNELS * 4  # float32 = 4 bytes
 
 # Spectrum analyzer settings
@@ -97,38 +94,21 @@ PROCESS_CATEGORY = "native-mic"
 
 
 class NativeMicChain:
-    """Python-native mic processing chain with real-time parameter updates."""
+    """Python-native mic processing chain with NVIDIA AFX noise removal."""
 
     def __init__(self):
         self.gate = dsp.GateProcessor()
         self.eq = dsp.EQProcessor()
         self.emi_filter = dsp.EMIFilter(fundamental_hz=240.0, num_harmonics=2, bin_radius=1)
 
-        # Try NVIDIA AFX first, fall back to RNNoise
-        self._afx = None
-        self._use_afx = False
-        self._fallback_noise = None
-        try:
-            self._afx = dsp.AFXNoiseProcessor(
-                effect_mode='denoiser',
-                intensity=0.7,
-                enabled=True,
-                frame_samples=BUFFER_SAMPLES,
-            )
-            if self._afx.available:
-                self._use_afx = True
-                self.noise = self._afx
-                print("  NativeMicChain: using NVIDIA AFX for noise removal")
-            else:
-                print("  NativeMicChain: AFX unavailable, falling back to RNNoise")
-                self._fallback_noise = dsp.RNNoiseVadGate()
-                self.noise = self._fallback_noise
-        except Exception as e:
-            print(f"  NativeMicChain: AFX init failed ({e}), falling back to RNNoise")
-            self._fallback_noise = dsp.RNNoiseVadGate()
-            self.noise = self._fallback_noise
-
-        self.rnnoise = self.noise  # backward compat alias
+        # NVIDIA AFX — the only noise processor
+        self._afx = dsp.AFXNoiseProcessor(
+            effect_mode='denoiser',
+            intensity=0.7,
+            enabled=True,
+            frame_samples=BUFFER_SAMPLES,
+        )
+        self.noise = self._afx
         self.compressor = dsp.CompressorProcessor()
 
         self._capture_proc = None
@@ -136,7 +116,7 @@ class NativeMicChain:
         self._thread: Optional[threading.Thread] = None
         self._running = False
 
-        # Pre-gain no longer needed — speexdsp works well on raw mic levels
+        # Pre-gain no longer needed — AFX handles raw mic levels well
         self._pre_gain = 1.0
         self._post_atten = 1.0
 
@@ -538,7 +518,7 @@ class NativeMicChain:
                 if CHANNELS == 1:
                     block = block.squeeze()  # (480,) 1D array
 
-                # Process: AFX noise removal (or RNNoise fallback) → gate → EQ → compressor
+                # Process: AFX noise removal → gate → EQ → compressor
                 # AFX handles both steady noise AND transients (keyboard, taps)
                 # using AI-powered denoising on the RTX GPU
                 block = self.noise.process(block)
@@ -748,11 +728,8 @@ class NativeMicChain:
 
     def set_noise(self, intensity: float = None, enabled: bool = None):
         if intensity is not None:
-            # AFX uses 0.0-1.0, RNNoise uses 0-100
-            if self._use_afx:
-                self.noise.set_intensity(max(0.0, min(1.0, intensity / 100.0)))
-            else:
-                self.noise.set_intensity(intensity)
+            # AFX uses 0.0-1.0 intensity scale
+            self.noise.set_intensity(max(0.0, min(1.0, intensity / 100.0)))
         if enabled is not None:
             self.noise.set_enabled(enabled)
 
