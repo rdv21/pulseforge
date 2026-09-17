@@ -25,7 +25,8 @@ Most Linux audio tools are built for audio engineers. PulseForge is built for pe
 Studio-grade mic chain running in real-time, all parameters adjustable with zero latency:
 
 - **Noise cancellation** — speexdsp-powered suppression with continuous intensity control (no robotic artifacts)
-- **Noise gate** — RMS-based detection with smooth attack/release, fully closes to zero
+- **NVIDIA AFX** — optional AI-powered noise removal on RTX GPUs (denoiser, dereverb, studio voice). Automatically detected at runtime; falls back to speexdsp on non-RTX systems
+- **Noise gate** — RMS-based detection with smooth attack/release, adjustable range floor
 - **8-band parametric EQ** — visual draggable curve, real-time FFT spectrum overlay, save/load presets
 - **Compressor** — feed-forward design with transparent defaults for clean voice
 

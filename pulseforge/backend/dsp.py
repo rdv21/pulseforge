@@ -6,14 +6,17 @@ Processors:
   - Gate: threshold-based expander with attack/release
   - EQ: 8-band peaking biquad filter
   - RNNoise: loaded via ctypes from librnnoise
+  - NVIDIA AFX: AI-powered noise removal via NVIDIA Audio Effects SDK (ctypes)
   - Compressor: feed-forward compressor with attack/release
 
-All processors operate on numpy float32 stereo arrays (N, 2).
+All processors operate on numpy float32 arrays (mono or stereo).
 Sample rate: 48000 Hz.
 """
 import numpy as np
 import ctypes
 import ctypes.util
+import subprocess
+import os
 from pathlib import Path
 
 SAMPLE_RATE = 48000
@@ -866,3 +869,492 @@ class RNNoiseProcessor:
                 self._lib.rnnoise_destroy(self._state_l)
             if self._state_r:
                 self._lib.rnnoise_destroy(self._state_r)
+
+
+# ─── NVIDIA AFX Noise Processor ──────────────────────────────────
+
+class AFXNoiseProcessor:
+    """NVIDIA Audio Effects SDK (AFX) noise removal via ctypes.
+
+    Uses NVIDIA's AI-powered denoiser running on the RTX GPU via CUDA/TensorRT.
+    Dramatically superior to RNNoise — removes background noise, fans, keyboard
+    clicks, and room noise while preserving voice clarity.
+
+    Supports multiple effect modes:
+      - 'denoiser': Noise removal (standard)
+      - 'denoiser_v2': BNR 2.0 (improved denoiser)
+      - 'dereverb': Room echo removal
+      - 'dereverb_denoiser': Combined noise + room echo
+      - 'studio_voice_low_latency': Studio Voice (low latency)
+
+    Requires:
+      - NVIDIA RTX GPU (RTX 20/30/40/50 series)
+      - libnv_audiofx.so (NVIDIA AFX SDK)
+      - CUDA + TensorRT runtime
+      - Model files (.trtpkg) for the appropriate GPU architecture
+
+    The intensity parameter (0.0-1.0) controls how aggressively noise is removed.
+    AFX runs on GPU at ~10ms latency (480 samples at 48kHz).
+    """
+
+    SAMPLE_RATE = 48000
+    FRAME_SIZE = 480  # 10ms at 48kHz — matches native_chain BUFFER_SAMPLES
+
+    # NVIDIA AFX parameter names (STRING-based, not integer enums)
+    _PARAM_USE_DEFAULT_GPU = b'use_default_gpu'
+    _PARAM_INPUT_SAMPLE_RATE = b'input_sample_rate'
+    _PARAM_NUM_STREAMS = b'num_streams'
+    _PARAM_NUM_SAMPLES_PER_INPUT_FRAME = b'num_samples_per_input_frame'
+    _PARAM_MODEL_PATH = b'model_path'
+    _PARAM_INTENSITY_RATIO = b'intensity_ratio'
+    _PARAM_ENABLE_VAD = b'enable_vad'
+    _PARAM_EFFECT_VERSION = b'effect_version'
+
+    # NvAFX_Status codes
+    _NVAFX_STATUS_SUCCESS = 0
+
+    # Compute capability → AFX model directory mapping
+    _GPU_ARCH_MAP = {
+        '7.5': 'sm_75',    # RTX 20 series
+        '8.6': 'sm_86',    # RTX 30 series
+        '8.9': 'sm_89',    # RTX 40 series
+        '12.0': 'sm_120',  # RTX 50 series (Blackwell)
+    }
+
+    def __init__(self, sdk_root: str = None, effect_mode: str = 'denoiser',
+                 intensity: float = 0.7, enabled: bool = True,
+                 frame_samples: int = 480):
+        """Initialize NVIDIA AFX noise processor.
+
+        Args:
+            sdk_root: Path to AFX SDK root directory containing nvafx/ and features/.
+                      If None, tries common locations.
+            effect_mode: One of 'denoiser', 'denoiser_v2', 'dereverb',
+                         'dereverb_denoiser', 'studio_voice_low_latency'.
+            intensity: 0.0-1.0, how aggressively to remove noise.
+            enabled: Whether processing is active.
+            frame_samples: Frame size (480 for 10ms, 960 for 20ms).
+        """
+        self.enabled = enabled
+        self._intensity = max(0.0, min(1.0, intensity))
+        self._effect_mode = effect_mode
+        self._frame_samples = frame_samples
+
+        self._lib = None
+        self._handle = None
+        self._supports_intensity = True
+        self._in_buf = None
+        self._out_buf = None
+        self._in_np = None
+        self._out_np = None
+
+        # Determine SDK root and effect details
+        self._sdk_root = sdk_root or self._find_sdk_root()
+        if not self._sdk_root:
+            print("  AFX: SDK root not found — falling back to RNNoise")
+            return
+
+        self._init_lib()
+
+    def _find_sdk_root(self) -> str | None:
+        """Search common locations for the AFX SDK."""
+        candidates = [
+            # Linux Broadcast portable bundle
+            Path.home() / '.local/share/linux-broadcast/nvidia/current',
+            # Environment variable
+            Path(os.environ.get('AFX_SDK_ROOT', '')) if os.environ.get('AFX_SDK_ROOT') else None,
+            # Common install locations
+            Path('/opt/nvidia/afx'),
+            Path('/usr/local/afx'),
+            Path.home() / '.local/share/linux-broadcast',
+        ]
+
+        for c in candidates:
+            if c and c.exists():
+                # Verify expected structure
+                nvfx_lib = c / 'nvafx' / 'lib' / 'libnv_audiofx.so'
+                if not nvfx_lib.exists():
+                    # Try alternate layout (portable bundle)
+                    nvfx_lib = c / 'lib' / 'libnv_audiofx.so'
+                if nvfx_lib.exists() or (c / 'nvafx' / 'lib').exists():
+                    return str(c)
+                # Even without the lib, if features/ exists it might work
+                if (c / 'features').exists():
+                    return str(c)
+
+        return None
+
+    def _detect_gpu_arch(self) -> str:
+        """Detect GPU compute capability and map to AFX model directory."""
+        try:
+            r = subprocess.run(
+                ['nvidia-smi', '--query-gpu=compute_cap', '--format=csv,noheader,nounits'],
+                capture_output=True, text=True, timeout=5
+            )
+            if r.returncode == 0:
+                cap = r.stdout.strip().split('\n')[0].strip()
+                # Map compute capability to model directory
+                # e.g. "8.9" → "sm_89"
+                major, minor = cap.split('.')
+                arch = f"sm_{major}{minor}"
+                # Verify it's a known arch
+                if cap in self._GPU_ARCH_MAP:
+                    arch = self._GPU_ARCH_MAP[cap]
+                return arch
+        except Exception:
+            pass
+
+        # Fallback: try to determine from nvidia-smi GPU name
+        try:
+            r = subprocess.run(
+                ['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'],
+                capture_output=True, text=True, timeout=5
+            )
+            name = r.stdout.strip().lower()
+            if 'rtx 40' in name or 'rtx ada' in name:
+                return 'sm_89'
+            elif 'rtx 30' in name or 'rtx a' in name:
+                return 'sm_86'
+            elif 'rtx 20' in name:
+                return 'sm_75'
+            elif 'rtx 50' in name or 'blackwell' in name:
+                return 'sm_120'
+        except Exception:
+            pass
+
+        # Default to sm_89 (RTX 40 series — most common for this setup)
+        return 'sm_89'
+
+    def _resolve_effect(self) -> dict:
+        """Resolve effect mode to selector, model path, and capabilities."""
+        mode = self._effect_mode
+        sdk = Path(self._sdk_root)
+        arch = self._detect_gpu_arch()
+
+        effects = {
+            'denoiser': {
+                'selector': 'denoiser',
+                'feature': 'denoiser',
+                'model': 'denoiser_48k.trtpkg',
+                'supports_intensity': True,
+                'supports_vad': True,
+                'version_2': False,
+                'enable_vad': False,
+            },
+            'denoiser_v2': {
+                'selector': 'denoiser',
+                'feature': 'denoiser',
+                'model': 'denoiser_v2_48k.trtpkg',
+                'supports_intensity': True,
+                'supports_vad': True,
+                'version_2': True,
+                'enable_vad': True,
+            },
+            'dereverb': {
+                'selector': 'dereverb',
+                'feature': 'dereverb',
+                'model': 'dereverb_48k.trtpkg',
+                'supports_intensity': False,
+                'supports_vad': False,
+                'version_2': False,
+                'enable_vad': False,
+            },
+            'dereverb_denoiser': {
+                'selector': 'dereverb_denoiser',
+                'feature': 'dereverb_denoiser',
+                'model': 'dereverb_denoiser_48k.trtpkg',
+                'supports_intensity': True,
+                'supports_vad': True,
+                'version_2': False,
+                'enable_vad': False,
+            },
+            'studio_voice_low_latency': {
+                'selector': 'studio_voice_low_latency',
+                'feature': 'studio_voice',
+                'model': 'studio_voice_low_latency_48k.trtpkg',
+                'supports_intensity': False,
+                'supports_vad': False,
+                'version_2': False,
+                'enable_vad': False,
+            },
+        }
+
+        if mode not in effects:
+            raise ValueError(f"Unknown AFX effect mode: {mode}")
+
+        spec = effects[mode]
+
+        # Find model file — check multiple path patterns
+        model_path = sdk / 'features' / spec['feature'] / 'models' / arch / spec['model']
+        if not model_path.exists():
+            # Try without arch subdir
+            model_path = sdk / 'features' / spec['feature'] / 'models' / spec['model']
+        if not model_path.exists():
+            # Try lib directory (some bundles stage models there)
+            model_path = sdk / 'features' / spec['feature'] / 'lib' / spec['model']
+        if not model_path.exists():
+            raise FileNotFoundError(
+                f"AFX model not found: {spec['model']}\n"
+                f"  Searched under: {sdk}/features/{spec['feature']}/models/{arch}/\n"
+                f"  And: {sdk}/features/{spec['feature']}/models/\n"
+                f"  GPU arch: {arch}"
+            )
+
+        spec['model_path'] = str(model_path)
+        spec['arch'] = arch
+        return spec
+
+    def _find_lib(self) -> str | None:
+        """Find libnv_audiofx.so in the SDK."""
+        sdk = Path(self._sdk_root)
+        candidates = [
+            sdk / 'nvafx' / 'lib' / 'libnv_audiofx.so',
+            sdk / 'lib' / 'libnv_audiofx.so',
+            sdk / 'lib64' / 'libnv_audiofx.so',
+        ]
+        for c in candidates:
+            if c.exists():
+                return str(c)
+        return None
+
+    def _init_lib(self):
+        """Load and initialize the NVIDIA AFX library via ctypes.
+
+        Preloads CUDA/TensorRT with RTLD_GLOBAL so symbols are available
+        to the feature-specific libraries (denoiser, dereverb, etc.)
+        that AFX dlopens internally.
+        """
+        try:
+            lib_path = self._find_lib()
+            if not lib_path:
+                print(f"  AFX: libnv_audiofx.so not found under {self._sdk_root}")
+                return
+
+            sdk = Path(self._sdk_root)
+            cuda_dir = sdk / 'external' / 'cuda' / 'lib'
+
+            # Preload CUDA/TensorRT with RTLD_GLOBAL — critical for denoiser lib
+            cuda_libs = [
+                'libcudart.so.12', 'libcublas.so.12', 'libcublasLt.so.12',
+                'libcufft.so.11', 'libnvrtc.so.12',
+                'libnvinfer.so.10', 'libnvinfer_plugin.so.10',
+            ]
+            for libname in cuda_libs:
+                p = cuda_dir / libname
+                if p.exists():
+                    try:
+                        ctypes.CDLL(str(p), mode=ctypes.RTLD_GLOBAL)
+                    except Exception as e:
+                        print(f"  AFX: preload {libname}: {e}")
+
+            self._lib = ctypes.CDLL(lib_path)
+
+            # --- Resolve function signatures (STRING parameter names) ---
+
+            self._lib.NvAFX_CreateEffect.restype = ctypes.c_int
+            self._lib.NvAFX_CreateEffect.argtypes = [
+                ctypes.c_char_p, ctypes.POINTER(ctypes.c_void_p)
+            ]
+
+            self._lib.NvAFX_SetU32.restype = ctypes.c_int
+            self._lib.NvAFX_SetU32.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint]
+
+            self._lib.NvAFX_SetFloat.restype = ctypes.c_int
+            self._lib.NvAFX_SetFloat.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_float]
+
+            self._lib.NvAFX_SetStringList.restype = ctypes.c_int
+            self._lib.NvAFX_SetStringList.argtypes = [
+                ctypes.c_void_p, ctypes.c_char_p,
+                ctypes.POINTER(ctypes.c_char_p), ctypes.c_uint
+            ]
+
+            self._lib.NvAFX_Load.restype = ctypes.c_int
+            self._lib.NvAFX_Load.argtypes = [ctypes.c_void_p]
+
+            self._lib.NvAFX_Run.restype = ctypes.c_int
+            self._lib.NvAFX_Run.argtypes = [
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.POINTER(ctypes.c_float)),
+                ctypes.POINTER(ctypes.POINTER(ctypes.c_float)),
+                ctypes.c_uint, ctypes.c_uint
+            ]
+
+            self._lib.NvAFX_DestroyEffect.restype = None
+            self._lib.NvAFX_DestroyEffect.argtypes = [ctypes.c_void_p]
+
+            # --- Create and configure the effect ---
+            spec = self._resolve_effect()
+            self._supports_intensity = spec['supports_intensity']
+
+            handle = ctypes.c_void_p()
+            selector = spec['selector'].encode('utf-8')
+            status = self._lib.NvAFX_CreateEffect(selector, ctypes.byref(handle))
+            if status != self._NVAFX_STATUS_SUCCESS:
+                print(f"  AFX: CreateEffect failed (status={status}) for '{spec['selector']}'")
+                self._lib = None
+                return
+            self._handle = handle
+
+            # Use default GPU (device 0)
+            status = self._lib.NvAFX_SetU32(
+                self._handle, self._PARAM_USE_DEFAULT_GPU, 0)
+            if status != self._NVAFX_STATUS_SUCCESS:
+                print(f"  AFX: SetGPU failed (status={status})")
+
+            # Set sample rate to 48kHz
+            status = self._lib.NvAFX_SetU32(
+                self._handle, self._PARAM_INPUT_SAMPLE_RATE, self.SAMPLE_RATE)
+            if status != self._NVAFX_STATUS_SUCCESS:
+                print(f"  AFX: SetSampleRate failed (status={status})")
+
+            # Single stream
+            status = self._lib.NvAFX_SetU32(
+                self._handle, self._PARAM_NUM_STREAMS, 1)
+            if status != self._NVAFX_STATUS_SUCCESS:
+                print(f"  AFX: SetNumStreams failed (status={status})")
+
+            # Frame size
+            status = self._lib.NvAFX_SetU32(
+                self._handle, self._PARAM_NUM_SAMPLES_PER_INPUT_FRAME,
+                self._frame_samples)
+            if status != self._NVAFX_STATUS_SUCCESS:
+                print(f"  AFX: SetFrameSize failed (status={status})")
+
+            # BNR 2.0 version flag
+            if spec.get('version_2'):
+                status = self._lib.NvAFX_SetU32(
+                    self._handle, self._PARAM_EFFECT_VERSION, 2)
+                if status != self._NVAFX_STATUS_SUCCESS:
+                    print(f"  AFX: SetEffectVersion failed (status={status})")
+
+            # Enable VAD if supported
+            if spec.get('enable_vad'):
+                status = self._lib.NvAFX_SetU32(
+                    self._handle, self._PARAM_ENABLE_VAD, 1)
+                if status != self._NVAFX_STATUS_SUCCESS:
+                    print(f"  AFX: EnableVAD failed (status={status})")
+
+            # Set model path
+            model_path_bytes = spec['model_path'].encode('utf-8')
+            models = (ctypes.c_char_p * 1)(model_path_bytes)
+            status = self._lib.NvAFX_SetStringList(
+                self._handle, self._PARAM_MODEL_PATH, models, 1)
+            if status != self._NVAFX_STATUS_SUCCESS:
+                print(f"  AFX: SetModelPath failed (status={status})")
+                self._cleanup_handle()
+                return
+
+            # Load the model (compiles TensorRT engines — may take a few seconds)
+            print(f"  AFX: Loading model '{spec['model']}' (arch={spec.get('arch', '?')}, "
+                  f"mode={self._effect_mode})...")
+            status = self._lib.NvAFX_Load(self._handle)
+            if status != self._NVAFX_STATUS_SUCCESS:
+                print(f"  AFX: Load failed (status={status})")
+                self._cleanup_handle()
+                return
+
+            # Set initial intensity
+            if self._supports_intensity:
+                status = self._lib.NvAFX_SetFloat(
+                    self._handle, self._PARAM_INTENSITY_RATIO,
+                    ctypes.c_float(self._intensity))
+                if status != self._NVAFX_STATUS_SUCCESS:
+                    print(f"  AFX: SetIntensity failed (status={status})")
+
+            # Pre-allocate buffers
+            self._in_buf = (ctypes.c_float * self._frame_samples)()
+            self._out_buf = (ctypes.c_float * self._frame_samples)()
+            self._in_np = np.ctypeslib.as_array(self._in_buf)
+            self._out_np = np.ctypeslib.as_array(self._out_buf)
+
+            print(f"  AFX: initialized successfully "
+                  f"(mode={self._effect_mode}, intensity={self._intensity}, "
+                  f"frame={self._frame_samples})")
+
+        except Exception as e:
+            print(f"  AFX: init failed: {e}")
+            self._cleanup_handle()
+            self._lib = None
+
+    def _cleanup_handle(self):
+        """Destroy the AFX handle if it exists."""
+        if self._lib and self._handle:
+            try:
+                self._lib.NvAFX_DestroyEffect(self._handle)
+            except Exception:
+                pass
+            self._handle = None
+
+    def set_intensity(self, intensity: float):
+        """Set noise removal intensity (0.0-1.0)."""
+        self._intensity = max(0.0, min(1.0, intensity))
+        if self._lib and self._handle and self._supports_intensity:
+            self._lib.NvAFX_SetFloat(
+                self._handle, self._PARAM_INTENSITY_RATIO,
+                ctypes.c_float(self._intensity)
+            )
+
+    def set_enabled(self, enabled: bool):
+        self.enabled = enabled
+
+    def process(self, block: np.ndarray) -> np.ndarray:
+        """Process audio block through NVIDIA AFX."""
+        if not self.enabled or self._lib is None or not self._handle:
+            return block
+
+        if len(block) != self._frame_samples:
+            return block
+
+        # Squeeze stereo to mono (AFX processes mono)
+        if block.ndim == 2:
+            mono = block.mean(axis=1)
+        else:
+            mono = block
+
+        # Copy input to ctypes buffer
+        np.copyto(self._in_np, mono.astype(np.float32))
+
+        # Prepare float** arrays (1 stream)
+        in_ptr = ctypes.cast(self._in_buf, ctypes.POINTER(ctypes.c_float))
+        out_ptr = ctypes.cast(self._out_buf, ctypes.POINTER(ctypes.c_float))
+        in_arr = (ctypes.POINTER(ctypes.c_float) * 1)(in_ptr)
+        out_arr = (ctypes.POINTER(ctypes.c_float) * 1)(out_ptr)
+
+        status = self._lib.NvAFX_Run(
+            self._handle,
+            in_arr, out_arr,
+            self._frame_samples, 1
+        )
+
+        if status != self._NVAFX_STATUS_SUCCESS:
+            return block
+
+        result = self._out_np.copy()
+
+        # If input was stereo, duplicate mono output to both channels
+        if block.ndim == 2:
+            result = np.stack([result, result], axis=1)
+
+        return result.astype(np.float32)
+
+    def destroy(self):
+        """Clean up AFX resources."""
+        self._cleanup_handle()
+        self._lib = None
+
+    @property
+    def available(self) -> bool:
+        """True if AFX was successfully initialized."""
+        return self._lib is not None and self._handle is not None
+
+    @property
+    def effect_mode(self) -> str:
+        return self._effect_mode
+
+    def set_effect_mode(self, mode: str):
+        """Change effect mode — requires re-initialization."""
+        if mode == self._effect_mode:
+            return
+        self._effect_mode = mode
+        self.destroy()
+        self._init_lib()

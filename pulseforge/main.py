@@ -27,6 +27,7 @@ from PySide6.QtQuick import QQuickImageProvider
 from .backend import config
 from .backend import pipewire_ctl as pw
 from .backend import app_router
+from .backend.dsp import AFXNoiseProcessor
 from .backend.native_chain import NativeMicChain
 from .backend.vu_meter import get_poller
 from .backend.process_manager import get_manager
@@ -339,6 +340,13 @@ class PulseForgeBridge(QObject):
         noise_cfg = cfg.get("noise", {})
         intensity = noise_cfg.get("intensity", 50)
         self._mic_chain.set_noise(intensity=float(intensity), enabled=noise_cfg.get("enabled", True))
+
+        # Apply AFX settings if available
+        afx_cfg = cfg.get("afx", {})
+        afx = getattr(self._mic_chain, '_afx', None)
+        if afx and afx.available:
+            afx.set_intensity(afx_cfg.get("intensity", 0.7))
+            afx.set_enabled(afx_cfg.get("enabled", True))
 
         comp_cfg = cfg.get("compressor", {})
         self._mic_chain.set_compressor(
@@ -953,6 +961,63 @@ class PulseForgeBridge(QObject):
         self._config["mic"]["noise"]["enabled"] = enabled
         config.save_config(self._config)
 
+    # ─── AFX (NVIDIA Audio Effects) Slots ───
+
+    @Slot(result='QVariant')
+    def getAfxStatus(self):
+        """Return AFX availability and current settings for QML."""
+        afx = getattr(self._mic_chain, '_afx', None)
+        afx_cfg = self._config.get("mic", {}).get("afx", {})
+        return {
+            "available": afx.available if afx else False,
+            "enabled": afx_cfg.get("enabled", True),
+            "effect_mode": afx_cfg.get("effect_mode", "denoiser"),
+            "intensity": int(afx_cfg.get("intensity", 0.7) * 100),
+        }
+
+    @Slot(str)
+    def setAfxEffectMode(self, mode: str):
+        """Change AFX effect mode — requires re-initialization."""
+        afx = getattr(self._mic_chain, '_afx', None)
+        if afx and afx.available:
+            afx.set_effect_mode(mode)
+            if afx.available:
+                self._mic_chain.noise = afx
+                self._mic_chain._use_afx = True
+            else:
+                self._mic_chain.noise = self._mic_chain._fallback_noise
+                self._mic_chain._use_afx = False
+        self._config.setdefault("mic", {}).setdefault("afx", {})["effect_mode"] = mode
+        config.save_config(self._config)
+        self.statusMessage.emit(f"AFX mode: {mode}")
+
+    @Slot(float)
+    def setAfxIntensity(self, intensity: float):
+        """Set AFX intensity (0.0-1.0 from QML slider)."""
+        self._mic_chain.set_noise(intensity=intensity * 100.0)
+        self._config.setdefault("mic", {}).setdefault("afx", {})["intensity"] = intensity
+        config.save_config(self._config)
+
+    @Slot(bool)
+    def setAfxEnabled(self, enabled: bool):
+        """Toggle between AFX and RNNoise fallback."""
+        afx = getattr(self._mic_chain, '_afx', None)
+        if enabled and afx and afx.available:
+            afx.set_enabled(True)
+            self._mic_chain.noise = afx
+            self._mic_chain._use_afx = True
+        else:
+            if afx:
+                afx.set_enabled(False)
+            fallback = getattr(self._mic_chain, '_fallback_noise', None)
+            if fallback:
+                fallback.set_enabled(True)
+                self._mic_chain.noise = fallback
+                self._mic_chain._use_afx = False
+        self._config.setdefault("mic", {}).setdefault("afx", {})["enabled"] = enabled
+        config.save_config(self._config)
+        self.statusMessage.emit(f"AFX {'enabled' if enabled else 'disabled'}")
+
     @Slot(float)
     def setCompThreshold(self, threshold_db: float):
         self._mic_chain.set_compressor(threshold_db=threshold_db)
@@ -1054,6 +1119,12 @@ class PulseForgeBridge(QObject):
             "noise": {
                 "enabled": mic.get("noise", {}).get("enabled", True),
                 "intensity": mic.get("noise", {}).get("intensity", 50),
+            },
+            "afx": {
+                "available": getattr(self._mic_chain, '_afx', None) is not None and self._mic_chain._afx.available if hasattr(self._mic_chain, '_afx') and self._mic_chain._afx else False,
+                "enabled": mic.get("afx", {}).get("enabled", True),
+                "effect_mode": mic.get("afx", {}).get("effect_mode", "denoiser"),
+                "intensity": int(mic.get("afx", {}).get("intensity", 0.7) * 100),
             },
             "compressor": {
                 "enabled": mic.get("compressor", {}).get("enabled", True),

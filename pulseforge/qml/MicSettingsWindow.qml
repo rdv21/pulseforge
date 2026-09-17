@@ -21,6 +21,7 @@ Window {
     property var presetList: []
     property bool _loadingPreset: false
     property bool _loading: false
+    property bool afxAvailable: false
 
     // Connection to backend for spectrum updates
     Connections {
@@ -65,6 +66,14 @@ Window {
         // Noise
         noiseCard.cardEnabled = s.noise.enabled
         noiseCard.sliderValue = s.noise.intensity
+        // AFX
+        var afx = s.afx || {}
+        afxAvailable = afx.available || false
+        afxCard.cardEnabled = afx.enabled
+        afxCard.sliderValue = afx.intensity || 70
+        afxModeCombo.currentIndex = afxModeCombo.indexOfValue(afx.effect_mode || "denoiser")
+        afxAvailableText.text = afx.available ? "RTX GPU — Active" : "Not available (using RNNoise)"
+        afxAvailableText.color = afx.available ? micWindow.streamGreen : micWindow.textDim
         // Compressor
         compCard.cardEnabled = s.compressor.enabled
         compCard.sliderValue = s.compressor.threshold
@@ -391,6 +400,144 @@ Window {
 
                 Text {
                     text: "Drag points to adjust gain · Scroll over a point to change Q · Double-click point to reset"
+                    font.pixelSize: 9
+                    color: micWindow.textDim
+                    Layout.alignment: Qt.AlignHCenter
+                }
+            }
+        }
+
+        Rectangle { Layout.fillWidth: true; height: 1; color: micWindow.borderColor }
+
+        // ─── NVIDIA AFX (AI Noise Removal) ───
+        Rectangle {
+            Layout.fillWidth: true
+            radius: 8
+            color: micWindow.bgCard
+            border.width: 1
+            border.color: micWindow.borderColor
+            implicitHeight: afxContent.implicitHeight + 20
+            visible: afxAvailable
+
+            ColumnLayout {
+                id: afxContent
+                anchors.fill: parent
+                anchors.margins: 10
+                spacing: 6
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+
+                    Text {
+                        text: "⚡ NVIDIA AFX — AI Noise Removal"
+                        font.pixelSize: 11
+                        font.bold: true
+                        color: micWindow.textDim
+                        Layout.fillWidth: true
+                    }
+
+                    Text {
+                        id: afxAvailableText
+                        text: "Checking..."
+                        font.pixelSize: 10
+                        color: micWindow.textDim
+                    }
+
+                    Rectangle {
+                        id: afxEnableCheckbox
+                        width: 18; height: 18
+                        radius: 3
+                        color: checked ? micWindow.accent : micWindow.bgDark
+                        border.width: 1
+                        border.color: checked ? micWindow.accent : micWindow.borderColor
+                        property bool checked: true
+
+                        Text {
+                            anchors.centerIn: parent
+                            text: "✓"
+                            font.pixelSize: 12
+                            font.bold: true
+                            color: "white"
+                            visible: parent.checked
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                parent.checked = !parent.checked
+                                if (!micWindow._loading && typeof PulseForge !== "undefined") PulseForge.setAfxEnabled(parent.checked)
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: "Enable"
+                        font.pixelSize: 11
+                        color: micWindow.textColor
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    Text {
+                        text: "Mode:"
+                        font.pixelSize: 11
+                        color: micWindow.textDim
+                    }
+
+                    ComboBox {
+                        id: afxModeCombo
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 28
+                        font.pixelSize: 11
+                        model: [
+                            { value: "denoiser", label: "Noise Removal" },
+                            { value: "denoiser_v2", label: "BNR 2.0 (Enhanced)" },
+                            { value: "dereverb", label: "Room Echo Removal" },
+                            { value: "dereverb_denoiser", label: "Noise + Room Echo" },
+                            { value: "studio_voice_low_latency", label: "Studio Voice" }
+                        ]
+                        textRole: "label"
+                        valueRole: "value"
+
+                        onActivated: function(index) {
+                            if (!micWindow._loading && typeof PulseForge !== "undefined") {
+                                PulseForge.setAfxEffectMode(currentValue)
+                            }
+                        }
+
+                        function indexOfValue(val) {
+                            for (var i = 0; i < count; i++) {
+                                if (model[i].value === val) return i
+                            }
+                            return 0
+                        }
+                    }
+                }
+
+                ProcessingCard {
+                    id: afxCard
+                    title: "AFX Intensity"
+                    Layout.fillWidth: true
+                    sliderLabel: "Intensity"
+                    sliderValue: 70
+                    sliderUnit: "%"
+                    sliderMin: 0
+                    sliderMax: 100
+                    onEnabledToggled: function(enabled) {
+                        if (!micWindow._loading && typeof PulseForge !== "undefined") PulseForge.setAfxEnabled(enabled)
+                    }
+                    onSliderMoved: function(value) {
+                        if (!micWindow._loading && typeof PulseForge !== "undefined") PulseForge.setAfxIntensity(value / 100.0)
+                    }
+                }
+
+                Text {
+                    text: "AFX runs on your RTX GPU via CUDA/TensorRT · ~1ms latency"
                     font.pixelSize: 9
                     color: micWindow.textDim
                     Layout.alignment: Qt.AlignHCenter

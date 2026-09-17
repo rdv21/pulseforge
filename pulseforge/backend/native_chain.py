@@ -1,13 +1,17 @@
 """Native Python mic processing chain.
 
 Captures audio from the hardware mic via pw-cat --record, processes it
-through gate → EQ → RNNoise → compressor in Python, and plays it back
-via pw-cat --playback to create the pulseforge.mic.processed node.
+through AFX noise removal (or RNNoise fallback) → gate → EQ → compressor
+in Python, and plays it back via pw-cat --playback to create the
+pulseforge.mic.processed node.
+
+NVIDIA AFX (Audio Effects SDK) provides AI-powered noise removal on RTX GPUs.
+Falls back to RNNoiseVadGate if AFX SDK is not available.
 
 All parameters update in real-time — no process restarts needed.
 
-Audio format: float32, 48kHz, stereo.
-Buffer size: 480 samples (10ms) — matches RNNoise frame size.
+Audio format: float32, 48kHz, mono.
+Buffer size: 480 samples (10ms) — matches AFX/RNNoise frame size.
 """
 import subprocess
 import threading
@@ -99,7 +103,31 @@ class NativeMicChain:
         self.gate = dsp.GateProcessor()
         self.eq = dsp.EQProcessor()
         self.emi_filter = dsp.EMIFilter(fundamental_hz=240.0, num_harmonics=2, bin_radius=1)
-        self.noise = dsp.RNNoiseVadGate()
+
+        # Try NVIDIA AFX first, fall back to RNNoise
+        self._afx = None
+        self._use_afx = False
+        self._fallback_noise = None
+        try:
+            self._afx = dsp.AFXNoiseProcessor(
+                effect_mode='denoiser',
+                intensity=0.7,
+                enabled=True,
+                frame_samples=BUFFER_SAMPLES,
+            )
+            if self._afx.available:
+                self._use_afx = True
+                self.noise = self._afx
+                print("  NativeMicChain: using NVIDIA AFX for noise removal")
+            else:
+                print("  NativeMicChain: AFX unavailable, falling back to RNNoise")
+                self._fallback_noise = dsp.RNNoiseVadGate()
+                self.noise = self._fallback_noise
+        except Exception as e:
+            print(f"  NativeMicChain: AFX init failed ({e}), falling back to RNNoise")
+            self._fallback_noise = dsp.RNNoiseVadGate()
+            self.noise = self._fallback_noise
+
         self.rnnoise = self.noise  # backward compat alias
         self.compressor = dsp.CompressorProcessor()
 
@@ -510,9 +538,9 @@ class NativeMicChain:
                 if CHANNELS == 1:
                     block = block.squeeze()  # (480,) 1D array
 
-                # Process: RNNoise VAD gate (noise+transient suppression) → gate → EQ → compressor
-                # VAD gate handles both steady noise AND transients (keyboard, taps)
-                # using RNNoise's voice probability as a smooth gain multiplier
+                # Process: AFX noise removal (or RNNoise fallback) → gate → EQ → compressor
+                # AFX handles both steady noise AND transients (keyboard, taps)
+                # using AI-powered denoising on the RTX GPU
                 block = self.noise.process(block)
                 if not np.all(np.isfinite(block)):
                     block = np.zeros_like(block)
@@ -720,7 +748,11 @@ class NativeMicChain:
 
     def set_noise(self, intensity: float = None, enabled: bool = None):
         if intensity is not None:
-            self.noise.set_intensity(intensity)
+            # AFX uses 0.0-1.0, RNNoise uses 0-100
+            if self._use_afx:
+                self.noise.set_intensity(max(0.0, min(1.0, intensity / 100.0)))
+            else:
+                self.noise.set_intensity(intensity)
         if enabled is not None:
             self.noise.set_enabled(enabled)
 
