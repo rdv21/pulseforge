@@ -152,6 +152,9 @@ class GateProcessor:
             self._gain = 1.0
 
         # block * gc creates a NEW array (numpy binary op) — safe to return
+        # Reshape gc for broadcasting: (block_len,) -> (block_len, 1) for stereo
+        if block.ndim == 2:
+            return block * gc[:, np.newaxis]
         return block * gc
 
 
@@ -465,9 +468,15 @@ class CompressorProcessor:
             self._gain = 1.0
 
         blen = len(block)
-        if blen > len(self._out_buf):
-            self._out_buf = np.empty(blen, dtype=np.float32)
-        np.multiply(block, np.float32(self._gain), out=self._out_buf[:blen])
+        # Handle stereo (N, 2) vs mono (N,)
+        if block.ndim == 2:
+            if self._out_buf.ndim != 2 or blen > self._out_buf.shape[0]:
+                self._out_buf = np.empty((blen, 2), dtype=np.float32)
+            np.multiply(block, np.float32(self._gain), out=self._out_buf[:blen])
+        else:
+            if self._out_buf.ndim != 1 or blen > len(self._out_buf):
+                self._out_buf = np.empty(blen, dtype=np.float32)
+            np.multiply(block, np.float32(self._gain), out=self._out_buf[:blen])
         return self._out_buf[:blen]
 
 
@@ -765,9 +774,17 @@ class RNNoiseVadGate:
             gain = 1.0
 
         # Apply gain to the ORIGINAL signal (not the pre-gained version)
-        # Returns view into _gain_buf — safe because processing loop consumes it before next call
-        np.multiply(block, np.float32(gain), out=self._gain_buf[:len(block)])
-        return self._gain_buf[:len(block)]
+        # Handle stereo (N, 2) vs mono (N,)
+        blen = len(block)
+        if block.ndim == 2:
+            if self._gain_buf.ndim != 2 or blen > self._gain_buf.shape[0]:
+                self._gain_buf = np.empty((blen, 2), dtype=np.float32)
+            np.multiply(block, np.float32(gain), out=self._gain_buf[:blen])
+        else:
+            if self._gain_buf.ndim != 1 or blen > len(self._gain_buf):
+                self._gain_buf = np.empty(blen, dtype=np.float32)
+            np.multiply(block, np.float32(gain), out=self._gain_buf[:blen])
+        return self._gain_buf[:blen]
 
     def destroy(self):
         if self._lib and self._state:
