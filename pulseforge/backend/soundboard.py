@@ -125,29 +125,46 @@ class ChannelRecorder:
     def _capture_loop(self):
         """Capture loop: read raw float32 from pw-cat stdout into ring buffer.
 
-        Uses --container raw to get header-less PCM (no WAV header interference).
-        Uses '-' as positional arg for stdout output.
+        Uses the VU meter technique: start pw-cat without --target, then
+        redirect the source-output to the monitor source using pactl
+        move-source-output. This is required because --target doesn't
+        work for PulseAudio compat monitor sources.
         """
         target = self.source_name
         # Only append .monitor if target is a sink name (not already a source)
-        # pulseforge.mic.processed is a source, not a sink — don't append .monitor
         if not target.endswith(".monitor") and not target.startswith("pulseforge.mic"):
             target = f"{target}.monitor"
 
-        cmd = [
-            "pw-cat", "--record",
-            "--target", target,
-            "--format", "f32",
-            "--rate", str(SAMPLE_RATE),
-            "--channels", str(self.channels),
-            "--container", "raw",
-            "--latency", "480",
-            "-"  # stdout (positional arg)
-        ]
+        app_tag = f"pulseforge_sb_{self.channel}"
         try:
+            # Start pw-cat WITHOUT --target (connects to default source)
             self._proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+                [
+                    "pw-cat", "--record",
+                    "--format", "f32",
+                    "--rate", str(SAMPLE_RATE),
+                    "--channels", str(self.channels),
+                    "--container", "raw",
+                    "--latency", "480",
+                    "-P", f"application.name={app_tag}",
+                    "-P", f"node.name={app_tag}",
+                    "-",  # stdout
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
             )
+
+            # Wait for pw-cat to create its source-output, then redirect
+            time.sleep(0.5)
+            if not self._redirect_to_monitor(target, app_tag):
+                # Retry a few times
+                for _ in range(5):
+                    time.sleep(0.3)
+                    if self._redirect_to_monitor(target, app_tag):
+                        break
+                else:
+                    print(f"  ChannelRecorder[{self.channel}]: failed to redirect to {target}")
+
             chunk_size = 480 * self.channels * 4  # 480 frames * Nch * 4 bytes (float32)
             while self._running and self._proc.poll() is None:
                 data = self._proc.stdout.read(chunk_size)
@@ -160,6 +177,28 @@ class ChannelRecorder:
             print(f"  ChannelRecorder[{self.channel}]: capture error: {e}")
         finally:
             self._running = False
+
+    def _redirect_to_monitor(self, target_source: str, app_tag: str) -> bool:
+        """Find our pw-cat source-output by app tag and redirect to target source."""
+        try:
+            r = subprocess.run(
+                ["pactl", "list", "source-outputs"],
+                capture_output=True, text=True, timeout=5
+            )
+            blocks = r.stdout.split("Source Output #")
+            for block in blocks[1:]:
+                idx = block.split("\n")[0].strip()
+                if app_tag in block:
+                    r2 = subprocess.run(
+                        ["pactl", "move-source-output", idx, target_source],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if r2.returncode == 0:
+                        print(f"  ChannelRecorder[{self.channel}]: redirected to {target_source}")
+                        return True
+            return False
+        except Exception:
+            return False
 
     def get_clip(self, duration: float = None) -> Optional[AudioClip]:
         """Get an audio clip from the ring buffer.
