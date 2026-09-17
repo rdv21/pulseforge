@@ -194,6 +194,112 @@ class EMIFilter:
         return out.astype(np.float32)
 
 
+class BiquadNotch:
+    """Second-order notch (band-stop) biquad filter.
+
+    Removes a narrow frequency band — ideal for tonal noise
+    (coil whine, USB EMI, mains hum harmonics) without affecting
+    surrounding frequencies. Higher Q = narrower notch.
+    """
+
+    def __init__(self, freq: float, q: float = 15.0, sample_rate: int = SAMPLE_RATE):
+        self._set_params(freq, q, sample_rate)
+        self._x1l = self._x2l = self._y1l = self._y2l = 0.0
+
+    def _set_params(self, freq: float, q: float, sr: int):
+        w0 = 2.0 * np.pi * freq / sr
+        cos_w0 = np.cos(w0)
+        sin_w0 = np.sin(w0)
+        alpha = sin_w0 / (2.0 * max(q, 0.1))
+
+        b0 = 1.0
+        b1 = -2.0 * cos_w0
+        b2 = 1.0
+        a0 = 1.0 + alpha
+        a1 = -2.0 * cos_w0
+        a2 = 1.0 - alpha
+
+        self._b0 = np.float32(b0 / a0)
+        self._b1 = np.float32(b1 / a0)
+        self._b2 = np.float32(b2 / a0)
+        self._a1 = np.float32(a1 / a0)
+        self._a2 = np.float32(a2 / a0)
+
+    def set_freq(self, freq: float, q: float = 15.0):
+        self._set_params(freq, q, SAMPLE_RATE)
+
+    def _process_channel(self, block: np.ndarray, state: tuple) -> tuple:
+        b0, b1, b2 = self._b0, self._b1, self._b2
+        a1, a2 = self._a1, self._a2
+        x1, x2, y1, y2 = state
+
+        ff = b0 * block.copy()
+        ff[1:] += b1 * block[:-1]
+        if len(block) > 1:
+            ff[2:] += b2 * block[:-2]
+        ff[0] += b1 * x1 + b2 * x2
+        if len(block) > 1:
+            ff[1] += b2 * x1
+
+        out = np.empty_like(block)
+        for i in range(len(block)):
+            y = ff[i] - a1 * y1 - a2 * y2
+            out[i] = y
+            y2 = y1
+            y1 = y
+
+        return out, (block[-1] if len(block) > 0 else x1,
+                     block[-2] if len(block) > 1 else x1,
+                     float(out[-1]) if len(out) > 0 else y1,
+                     float(out[-2]) if len(out) > 1 else y2)
+
+    def process(self, block: np.ndarray) -> np.ndarray:
+        if block.ndim == 1:
+            out, (self._x1l, self._x2l, self._y1l, self._y2l) = \
+                self._process_channel(block, (self._x1l, self._x2l, self._y1l, self._y2l))
+            return out
+        out_l, (self._x1l, self._x2l, self._y1l, self._y2l) = \
+            self._process_channel(block[:, 0], (self._x1l, self._x2l, self._y1l, self._y2l))
+        return out_l
+
+
+class NotchFilterChain:
+    """Cascaded biquad notch filters for removing multiple tonal noise frequencies.
+
+    Each notch targets a specific frequency with configurable Q.
+    Processes mono blocks; stereo is squeezed to mono.
+    """
+
+    def __init__(self, freqs: list[float] = None, q: float = 15.0,
+                 sample_rate: int = SAMPLE_RATE, block_size: int = 480):
+        self.enabled = True
+        self._filters: list[BiquadNotch] = []
+        self._freqs = freqs or []
+        self._q = q
+        self._sample_rate = sample_rate
+        self._block_size = block_size
+        for f in self._freqs:
+            self._filters.append(BiquadNotch(f, q, sample_rate))
+
+    def set_frequencies(self, freqs: list[float], q: float = 15.0):
+        """Replace all notch frequencies."""
+        self._freqs = freqs
+        self._q = q
+        self._filters = [BiquadNotch(f, q, self._sample_rate) for f in freqs]
+
+    def set_enabled(self, enabled: bool):
+        self.enabled = enabled
+
+    def process(self, block: np.ndarray) -> np.ndarray:
+        if not self.enabled or not self._filters:
+            return block
+        if block.ndim == 2:
+            block = block.mean(axis=1)
+        for f in self._filters:
+            block = f.process(block)
+        return block
+
+
 class BiquadHighPass:
     """Second-order high-pass biquad filter for rumble/cable noise removal.
 
@@ -573,6 +679,7 @@ class AFXNoiseProcessor:
             # Common install locations
             Path('/opt/nvidia/afx'),
             Path('/usr/local/afx'),
+            Path.home() / '.local/opt/nvidia/afx',
             Path.home() / '.local/share/linux-broadcast',
         ]
 
@@ -700,12 +807,9 @@ class AFXNoiseProcessor:
             # Try lib directory (some bundles stage models there)
             model_path = sdk / 'features' / spec['feature'] / 'lib' / spec['model']
         if not model_path.exists():
-            raise FileNotFoundError(
-                f"AFX model not found: {spec['model']}\n"
-                f"  Searched under: {sdk}/features/{spec['feature']}/models/{arch}/\n"
-                f"  And: {sdk}/features/{spec['feature']}/models/\n"
-                f"  GPU arch: {arch}"
-            )
+            print(f"  AFX: model not found: {spec['model']} "
+                  f"(feature={spec['feature']}, arch={arch})")
+            return
 
         spec['model_path'] = str(model_path)
         spec['arch'] = arch
@@ -727,9 +831,9 @@ class AFXNoiseProcessor:
     def _init_lib(self):
         """Load and initialize the NVIDIA AFX library via ctypes.
 
-        Preloads CUDA/TensorRT with RTLD_GLOBAL so symbols are available
-        to the feature-specific libraries (denoiser, dereverb, etc.)
-        that AFX dlopens internally.
+        Uses ctypes.CDLL with full paths for each dependency, preloaded with
+        RTLD_GLOBAL so the dynamic linker can resolve NEEDED entries when
+        loading libnv_audiofx.so and the feature libs it dlopens.
         """
         try:
             lib_path = self._find_lib()
@@ -739,14 +843,21 @@ class AFXNoiseProcessor:
 
             sdk = Path(self._sdk_root)
             cuda_dir = sdk / 'external' / 'cuda' / 'lib'
+            feat_dir = sdk / 'features' / 'denoiser' / 'lib'
 
-            # Preload CUDA/TensorRT with RTLD_GLOBAL — critical for denoiser lib
-            cuda_libs = [
-                'libcudart.so.12', 'libcublas.so.12', 'libcublasLt.so.12',
-                'libcufft.so.11', 'libnvrtc.so.12',
-                'libnvinfer.so.10', 'libnvinfer_plugin.so.10',
+            # Preload ALL CUDA/TensorRT/cuDNN libs with RTLD_GLOBAL.
+            # Order matters: load deps before libs that need them.
+            preload_order = [
+                'libcudart.so.12',
+                'libcublas.so.12',
+                'libcublasLt.so.12',
+                'libcufft.so.11',
+                'libnvrtc.so.12',
+                'libnvinfer.so.10',
+                'libnvinfer_plugin.so.10',
+                'libcudnn.so.9',
             ]
-            for libname in cuda_libs:
+            for libname in preload_order:
                 p = cuda_dir / libname
                 if p.exists():
                     try:
@@ -754,6 +865,28 @@ class AFXNoiseProcessor:
                     except Exception as e:
                         print(f"  AFX: preload {libname}: {e}")
 
+            # Preload feature-specific lib (denoiser) with RTLD_GLOBAL.
+            # This provides the denoiser implementation that libnv_audiofx dlopens.
+            feat_lib = feat_dir / 'libnv_audiofx_denoiser.so'
+            if feat_lib.exists():
+                try:
+                    ctypes.CDLL(str(feat_lib), mode=ctypes.RTLD_GLOBAL)
+                except Exception as e:
+                    print(f"  AFX: preload denoiser feature lib: {e}")
+
+            # Also set LD_LIBRARY_PATH for any transitive dlopen calls
+            # that the AFX lib does internally.
+            lib_dirs = [
+                str(sdk / 'nvafx' / 'lib'),
+                str(cuda_dir),
+                str(feat_dir),
+            ]
+            existing_ld = os.environ.get('LD_LIBRARY_PATH', '')
+            if existing_ld and existing_ld not in lib_dirs:
+                lib_dirs.append(existing_ld)
+            os.environ['LD_LIBRARY_PATH'] = ':'.join(lib_dirs)
+
+            # Load libnv_audiofx
             self._lib = ctypes.CDLL(lib_path)
 
             # --- Resolve function signatures (STRING parameter names) ---
@@ -768,6 +901,11 @@ class AFXNoiseProcessor:
 
             self._lib.NvAFX_SetFloat.restype = ctypes.c_int
             self._lib.NvAFX_SetFloat.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_float]
+
+            self._lib.NvAFX_SetString.restype = ctypes.c_int
+            self._lib.NvAFX_SetString.argtypes = [
+                ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p
+            ]
 
             self._lib.NvAFX_SetStringList.restype = ctypes.c_int
             self._lib.NvAFX_SetStringList.argtypes = [
@@ -786,102 +924,111 @@ class AFXNoiseProcessor:
                 ctypes.c_uint, ctypes.c_uint
             ]
 
-            self._lib.NvAFX_DestroyEffect.restype = None
+            self._lib.NvAFX_DestroyEffect.restype = ctypes.c_int
             self._lib.NvAFX_DestroyEffect.argtypes = [ctypes.c_void_p]
 
             # --- Create and configure the effect ---
-            spec = self._resolve_effect()
-            self._supports_intensity = spec['supports_intensity']
-
-            handle = ctypes.c_void_p()
-            selector = spec['selector'].encode('utf-8')
-            status = self._lib.NvAFX_CreateEffect(selector, ctypes.byref(handle))
-            if status != self._NVAFX_STATUS_SUCCESS:
-                print(f"  AFX: CreateEffect failed (status={status}) for '{spec['selector']}'")
-                self._lib = None
-                return
-            self._handle = handle
-
-            # Use default GPU (device 0)
-            status = self._lib.NvAFX_SetU32(
-                self._handle, self._PARAM_USE_DEFAULT_GPU, 0)
-            if status != self._NVAFX_STATUS_SUCCESS:
-                print(f"  AFX: SetGPU failed (status={status})")
-
-            # Set sample rate to 48kHz
-            status = self._lib.NvAFX_SetU32(
-                self._handle, self._PARAM_INPUT_SAMPLE_RATE, self.SAMPLE_RATE)
-            if status != self._NVAFX_STATUS_SUCCESS:
-                print(f"  AFX: SetSampleRate failed (status={status})")
-
-            # Single stream
-            status = self._lib.NvAFX_SetU32(
-                self._handle, self._PARAM_NUM_STREAMS, 1)
-            if status != self._NVAFX_STATUS_SUCCESS:
-                print(f"  AFX: SetNumStreams failed (status={status})")
-
-            # Frame size
-            status = self._lib.NvAFX_SetU32(
-                self._handle, self._PARAM_NUM_SAMPLES_PER_INPUT_FRAME,
-                self._frame_samples)
-            if status != self._NVAFX_STATUS_SUCCESS:
-                print(f"  AFX: SetFrameSize failed (status={status})")
-
-            # BNR 2.0 version flag
-            if spec.get('version_2'):
-                status = self._lib.NvAFX_SetU32(
-                    self._handle, self._PARAM_EFFECT_VERSION, 2)
-                if status != self._NVAFX_STATUS_SUCCESS:
-                    print(f"  AFX: SetEffectVersion failed (status={status})")
-
-            # Enable VAD if supported
-            if spec.get('enable_vad'):
-                status = self._lib.NvAFX_SetU32(
-                    self._handle, self._PARAM_ENABLE_VAD, 1)
-                if status != self._NVAFX_STATUS_SUCCESS:
-                    print(f"  AFX: EnableVAD failed (status={status})")
-
-            # Set model path
-            model_path_bytes = spec['model_path'].encode('utf-8')
-            models = (ctypes.c_char_p * 1)(model_path_bytes)
-            status = self._lib.NvAFX_SetStringList(
-                self._handle, self._PARAM_MODEL_PATH, models, 1)
-            if status != self._NVAFX_STATUS_SUCCESS:
-                print(f"  AFX: SetModelPath failed (status={status})")
-                self._cleanup_handle()
-                return
-
-            # Load the model (compiles TensorRT engines — may take a few seconds)
-            print(f"  AFX: Loading model '{spec['model']}' (arch={spec.get('arch', '?')}, "
-                  f"mode={self._effect_mode})...")
-            status = self._lib.NvAFX_Load(self._handle)
-            if status != self._NVAFX_STATUS_SUCCESS:
-                print(f"  AFX: Load failed (status={status})")
-                self._cleanup_handle()
-                return
-
-            # Set initial intensity
-            if self._supports_intensity:
-                status = self._lib.NvAFX_SetFloat(
-                    self._handle, self._PARAM_INTENSITY_RATIO,
-                    ctypes.c_float(self._intensity))
-                if status != self._NVAFX_STATUS_SUCCESS:
-                    print(f"  AFX: SetIntensity failed (status={status})")
-
-            # Pre-allocate buffers
-            self._in_buf = (ctypes.c_float * self._frame_samples)()
-            self._out_buf = (ctypes.c_float * self._frame_samples)()
-            self._in_np = np.ctypeslib.as_array(self._in_buf)
-            self._out_np = np.ctypeslib.as_array(self._out_buf)
-
-            print(f"  AFX: initialized successfully "
-                  f"(mode={self._effect_mode}, intensity={self._intensity}, "
-                  f"frame={self._frame_samples})")
+            self._create_and_configure()
 
         except Exception as e:
             print(f"  AFX: init failed: {e}")
             self._cleanup_handle()
             self._lib = None
+
+    def _create_and_configure(self):
+        """Create AFX effect handle and configure it (assumes _lib is loaded)."""
+        spec = self._resolve_effect()
+        if spec is None:
+            return
+        self._supports_intensity = spec['supports_intensity']
+
+        handle = ctypes.c_void_p()
+        selector = spec['selector'].encode('utf-8')
+        status = self._lib.NvAFX_CreateEffect(selector, ctypes.byref(handle))
+        if status != self._NVAFX_STATUS_SUCCESS:
+            print(f"  AFX: CreateEffect failed (status={status}) for '{spec['selector']}'")
+            return
+        self._handle = handle
+
+        # Use default GPU (device 0)
+        status = self._lib.NvAFX_SetU32(
+            self._handle, self._PARAM_USE_DEFAULT_GPU, 0)
+        if status != self._NVAFX_STATUS_SUCCESS:
+            print(f"  AFX: SetGPU failed (status={status})")
+
+        # Set sample rate to 48kHz
+        status = self._lib.NvAFX_SetU32(
+            self._handle, self._PARAM_INPUT_SAMPLE_RATE, self.SAMPLE_RATE)
+        if status != self._NVAFX_STATUS_SUCCESS:
+            print(f"  AFX: SetSampleRate failed (status={status})")
+
+        # Single stream
+        status = self._lib.NvAFX_SetU32(
+            self._handle, self._PARAM_NUM_STREAMS, 1)
+        if status != self._NVAFX_STATUS_SUCCESS:
+            print(f"  AFX: SetNumStreams failed (status={status})")
+
+        # Frame size
+        status = self._lib.NvAFX_SetU32(
+            self._handle, self._PARAM_NUM_SAMPLES_PER_INPUT_FRAME,
+            self._frame_samples)
+        if status != self._NVAFX_STATUS_SUCCESS:
+            print(f"  AFX: SetFrameSize failed (status={status})")
+
+        # BNR 2.0 version flag
+        if spec.get('version_2'):
+            status = self._lib.NvAFX_SetU32(
+                self._handle, self._PARAM_EFFECT_VERSION, 2)
+            if status != self._NVAFX_STATUS_SUCCESS:
+                print(f"  AFX: SetEffectVersion failed (status={status})")
+
+        # Enable VAD if supported
+        if spec.get('enable_vad'):
+            status = self._lib.NvAFX_SetU32(
+                self._handle, self._PARAM_ENABLE_VAD, 1)
+            if status != self._NVAFX_STATUS_SUCCESS:
+                print(f"  AFX: EnableVAD failed (status={status})")
+
+        # Set model path (try SetString first, fall back to SetStringList)
+        model_path_bytes = spec['model_path'].encode('utf-8')
+        status = self._lib.NvAFX_SetString(
+            self._handle, self._PARAM_MODEL_PATH, model_path_bytes)
+        if status != self._NVAFX_STATUS_SUCCESS:
+            # Fall back to SetStringList
+            models = (ctypes.c_char_p * 1)(model_path_bytes)
+            status = self._lib.NvAFX_SetStringList(
+                self._handle, self._PARAM_MODEL_PATH, models, 1)
+        if status != self._NVAFX_STATUS_SUCCESS:
+            print(f"  AFX: SetModelPath failed (status={status})")
+            self._cleanup_handle()
+            return
+
+        # Load the model (compiles TensorRT engines — may take a few seconds)
+        print(f"  AFX: Loading model '{spec['model']}' (arch={spec.get('arch', '?')}, "
+              f"mode={self._effect_mode})...")
+        status = self._lib.NvAFX_Load(self._handle)
+        if status != self._NVAFX_STATUS_SUCCESS:
+            print(f"  AFX: Load failed (status={status})")
+            self._cleanup_handle()
+            return
+
+        # Set initial intensity
+        if self._supports_intensity:
+            status = self._lib.NvAFX_SetFloat(
+                self._handle, self._PARAM_INTENSITY_RATIO,
+                ctypes.c_float(self._intensity))
+            if status != self._NVAFX_STATUS_SUCCESS:
+                print(f"  AFX: SetIntensity failed (status={status})")
+
+        # Pre-allocate buffers
+        self._in_buf = (ctypes.c_float * self._frame_samples)()
+        self._out_buf = (ctypes.c_float * self._frame_samples)()
+        self._in_np = np.ctypeslib.as_array(self._in_buf)
+        self._out_np = np.ctypeslib.as_array(self._out_buf)
+
+        print(f"  AFX: initialized successfully "
+              f"(mode={self._effect_mode}, intensity={self._intensity}, "
+              f"frame={self._frame_samples})")
 
     def _cleanup_handle(self):
         """Destroy the AFX handle if it exists."""
@@ -949,9 +1096,8 @@ class AFXNoiseProcessor:
         return result.astype(np.float32)
 
     def destroy(self):
-        """Clean up AFX resources."""
+        """Clean up AFX resources (handle only, keep lib loaded)."""
         self._cleanup_handle()
-        self._lib = None
 
     @property
     def available(self) -> bool:
@@ -963,9 +1109,11 @@ class AFXNoiseProcessor:
         return self._effect_mode
 
     def set_effect_mode(self, mode: str):
-        """Change effect mode — requires re-initialization."""
+        """Change effect mode — recreate handle without reloading lib."""
         if mode == self._effect_mode:
             return
         self._effect_mode = mode
-        self.destroy()
-        self._init_lib()
+        # Only destroy handle, keep _lib loaded (reloading TensorRT segfaults)
+        self._cleanup_handle()
+        if self._lib is not None:
+            self._create_and_configure()

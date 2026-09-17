@@ -1,7 +1,10 @@
 #!/bin/bash
 # PulseForge launcher
 # Automatically sets up NVIDIA AFX library path if SDK is detected
-cd "$(dirname "$0")"
+# Resolve symlink to find real script dir
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+cd "$SCRIPT_DIR/.."
+export PYTHONPATH="$SCRIPT_DIR/..:${PYTHONPATH:-}"
 
 AFX_SDK="${AFX_SDK_ROOT:-$HOME/.local/share/linux-broadcast/nvidia/current}"
 

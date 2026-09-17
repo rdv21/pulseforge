@@ -18,6 +18,42 @@ import re
 from pathlib import Path
 from typing import Optional
 
+# ─── NVIDIA AFX SDK: ensure LD_LIBRARY_PATH is set before any dlopen calls ───
+# libnv_audiofx.so internally dlopens feature libs (libnv_audiofx_denoiser.so)
+# by bare name. The dynamic linker only searches RPATH and LD_LIBRARY_PATH
+# for bare-name dlopen — RTLD_GLOBAL preloading is NOT sufficient because
+# it doesn't trigger the feature lib's init constructor.
+# We must set LD_LIBRARY_PATH BEFORE the process starts, so if it's not
+# already set, we re-exec ourselves with it.
+_AFX_SDK_CANDIDATES = [
+    Path.home() / '.local/share/linux-broadcast/nvidia/current',
+    Path.home() / '.local/opt/nvidia/afx',
+    Path('/opt/nvidia/afx'),
+]
+_afx_marker = 'PULSEFORGE_AFX_LD_SET'
+if _afx_marker not in os.environ:
+    for _afx_root in _AFX_SDK_CANDIDATES:
+        _nvafx_lib = _afx_root / 'nvafx' / 'lib' / 'libnv_audiofx.so'
+        if _nvafx_lib.exists():
+            _afx_dirs = [
+                str(_afx_root / 'nvafx' / 'lib'),
+                str(_afx_root / 'external' / 'cuda' / 'lib'),
+                str(_afx_root / 'features' / 'denoiser' / 'lib'),
+            ]
+            _existing = os.environ.get('LD_LIBRARY_PATH', '')
+            if _existing:
+                _afx_dirs.append(_existing)
+            os.environ['LD_LIBRARY_PATH'] = ':'.join(_afx_dirs)
+            os.environ[_afx_marker] = '1'
+            # Re-exec so the dynamic linker picks up LD_LIBRARY_PATH.
+            # Preserve the original invocation (module mode or script mode).
+            _argv = [sys.executable]
+            if sys.flags.warn_unicode:
+                _argv.append('-W')
+            os.execv(sys.executable, _argv + sys.argv)
+            break
+# ─── End AFX SDK path setup ───
+
 from PySide6.QtCore import QObject, QUrl, Signal, Slot, Property, QTimer, QThread, QSize
 from PySide6.QtGui import QGuiApplication, QIcon, QAction, QPixmap
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
@@ -361,6 +397,7 @@ class PulseForgeBridge(QObject):
         # Apply AFX settings
         afx_cfg = cfg.get("afx", {})
         afx = self._mic_chain._afx
+        afx.set_effect_mode(afx_cfg.get("effect_mode", "denoiser"))
         afx.set_intensity(afx_cfg.get("intensity", 0.7))
         afx.set_enabled(afx_cfg.get("enabled", True))
 

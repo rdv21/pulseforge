@@ -101,9 +101,17 @@ class NativeMicChain:
         self.eq = dsp.EQProcessor()
         self.emi_filter = dsp.EMIFilter(fundamental_hz=240.0, num_harmonics=2, bin_radius=1)
 
+        # Tonal noise notch filters — removes line noise / coil whine / USB EMI
+        # before AFX sees the signal, so AFX doesn't have to fight tonal artifacts
+        self.notch_chain = dsp.NotchFilterChain(
+            freqs=[128.0, 218.0],  # tuned to measured noise peaks
+            q=15.0,
+            block_size=BUFFER_SAMPLES,
+        )
+
         # NVIDIA AFX — the only noise processor
         self._afx = dsp.AFXNoiseProcessor(
-            effect_mode='denoiser',
+            effect_mode='denoiser_v2',
             intensity=0.7,
             enabled=True,
             frame_samples=BUFFER_SAMPLES,
@@ -518,14 +526,12 @@ class NativeMicChain:
                 if CHANNELS == 1:
                     block = block.squeeze()  # (480,) 1D array
 
-                # Process: AFX noise removal → gate → EQ → compressor
-                # AFX handles both steady noise AND transients (keyboard, taps)
-                # using AI-powered denoising on the RTX GPU
-                block = self.noise.process(block)
+                # Process: gate → AFX → EQ → compressor
+                block = self.gate.process(block)
                 if not np.all(np.isfinite(block)):
                     block = np.zeros_like(block)
 
-                block = self.gate.process(block)
+                block = self.noise.process(block)
                 if not np.all(np.isfinite(block)):
                     block = np.zeros_like(block)
 
