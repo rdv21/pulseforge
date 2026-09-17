@@ -339,6 +339,50 @@ ApplicationWindow {
         // Separator
         Rectangle { Layout.fillWidth: true; height: 1; color: root.borderColor }
 
+        // ─── Soundboard button ───
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 8
+
+            Text {
+                text: "🔊 Soundboard"
+                font.pixelSize: 12
+                font.bold: true
+                color: root.accent
+                Layout.fillWidth: true
+            }
+
+            Button {
+                text: soundboardWindow.visible ? "Hide" : "Open"
+                flat: true
+                height: 24
+                contentItem: Text {
+                    text: parent.text
+                    font.pixelSize: 11
+                    font.bold: true
+                    color: parent.pressed ? root.accent : root.textDim
+                    anchors.fill: parent
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+                background: Rectangle {
+                    color: parent.pressed ? "#1c1c28" : root.bgCard
+                    border.color: root.borderColor
+                    border.width: 1
+                    radius: 5
+                    implicitHeight: 24
+                    implicitWidth: 64
+                }
+                onClicked: {
+                    if (soundboardWindow.visible) {
+                        soundboardWindow.hide()
+                    } else {
+                        soundboardWindow.show()
+                    }
+                }
+            }
+        }
+
         // ─── App Routing Panel ───
         AppRoutingPanel {
             Layout.fillWidth: true
@@ -399,5 +443,10 @@ ApplicationWindow {
     // ─── Mic Settings Window ───
     MicSettingsWindow {
         id: micSettingsWindow
+    }
+
+    // ─── Soundboard Window ───
+    SoundboardWindow {
+        id: soundboardWindow
     }
 }

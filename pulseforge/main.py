@@ -31,6 +31,7 @@ from .backend.dsp import AFXNoiseProcessor
 from .backend.native_chain import NativeMicChain
 from .backend.vu_meter import get_poller
 from .backend.process_manager import get_manager
+from .backend.soundboard import SoundboardBackend
 
 
 # ─── QML Bridge ────────────────────────────────────────────────────
@@ -90,6 +91,10 @@ class PulseForgeBridge(QObject):
         self._vrserver_was_running = False
         self._vrserver_audio_snapshot: Optional[dict] = None
         self._vrserver_recovering = False
+
+        # Soundboard
+        config_dir = Path.home() / ".config" / "pulseforge"
+        self._soundboard = SoundboardBackend(config_dir)
 
     # ─── Lifecycle ───
 
@@ -1315,6 +1320,106 @@ class PulseForgeBridge(QObject):
                 except Exception:
                     pass
                 break
+
+    # ─── Soundboard Slots ───
+
+    @Slot(int, result='QVariant')
+    def getSoundboardSlots(self, page: int):
+        """Return list of 9 slot dicts for a page."""
+        result = []
+        for i in range(9):
+            slot = self._soundboard.get_slot(page, i)
+            result.append({
+                "file_path": slot.file_path if slot else "",
+                "name": slot.name if slot else "",
+                "volume": slot.volume if slot else 1.0,
+            })
+        return result
+
+    @Slot(int, int, str, str)
+    def assignSound(self, page: int, index: int, file_path: str, name: str):
+        """Bind a sound file to a slot."""
+        self._soundboard.assign_sound(page, index, file_path, name)
+
+    @Slot(int, int)
+    def clearSoundSlot(self, page: int, index: int):
+        """Clear a sound slot."""
+        self._soundboard.clear_slot(page, index)
+
+    @Slot(int, int)
+    def playSound(self, page: int, index: int):
+        """Play the sound in a slot."""
+        self._soundboard.play_sound(page, index)
+
+    @Slot(int, int, result=bool)
+    def isSoundPlaying(self, page: int, index: int):
+        return self._soundboard.is_playing(page, index)
+
+    @Slot(int, int)
+    def openSoundFileDialog(self, page: int, index: int):
+        """Open a file dialog to select a sound file."""
+        from PySide6.QtWidgets import QFileDialog
+        file_path, _ = QFileDialog.getOpenFileName(
+            None, "Select Sound File", "", "Audio Files (*.wav *.mp3 *.ogg *.flac *.opus)"
+        )
+        if file_path:
+            from pathlib import Path as _P
+            self._soundboard.assign_sound(page, index, file_path, _P(file_path).stem)
+            # Refresh QML
+            self.getSoundboardSlots(page)  # trigger reload via signal if needed
+
+    # ─── Channel Recording Slots ───
+
+    @Slot(str)
+    def startChannelRecording(self, channel: str):
+        """Start recording a channel into a 15s ring buffer."""
+        from .backend import pipewire_ctl as pw
+        internal = pw._VIRTUAL_SINK_INTERNAL.get(channel, f"pulseforge_{channel}")
+        self._soundboard.start_recording(channel, internal)
+
+    @Slot(str)
+    def stopChannelRecording(self, channel: str):
+        """Stop recording a channel."""
+        self._soundboard.stop_recording(channel)
+
+    @Slot(str, result=bool)
+    def isChannelRecording(self, channel: str):
+        """Check if a channel is being recorded."""
+        return channel in self._soundboard.get_recording_channels()
+
+    @Slot(result='QVariant')
+    def getRecordingChannels(self):
+        """Return list of currently recording channels."""
+        return self._soundboard.get_recording_channels()
+
+    @Slot(str, result='QVariant')
+    def getChannelWaveform(self, channel: str):
+        """Return waveform peaks for a channel's ring buffer."""
+        return self._soundboard.get_waveform(channel, 150)
+
+    @Slot(str)
+    def captureClip(self, channel: str):
+        """Capture a clip from the ring buffer and open the waveform editor."""
+        self._captured_clip = self._soundboard.get_clip(channel)
+        if self._captured_clip:
+            print(f"  Soundboard: captured {self._captured_clip.duration:.1f}s clip from {channel}")
+
+    @Slot(str)
+    def exportClip(self, channel: str):
+        """Export the current clip to a WAV file."""
+        from PySide6.QtWidgets import QFileDialog
+        clip = self._soundboard.get_clip(channel)
+        if not clip:
+            return
+        file_path, _ = QFileDialog.getSaveFileName(
+            None, "Export Clip", f"{channel}_clip.wav", "WAV Files (*.wav)"
+        )
+        if file_path:
+            if self._soundboard.export_clip_wav(clip, file_path):
+                print(f"  Soundboard: exported to {file_path}")
+
+    def _cleanup_soundboard(self):
+        self._soundboard.cleanup()
 
 
 def main():
