@@ -5,10 +5,10 @@ Architecture:
     file playback via pw-play, and per-channel ring buffer recording.
   - ChannelRecorder: captures audio from each PipeWire channel sink
     (game, chat, media, aux, mic) using pw-cat --record, keeping
-    a 15-second ring buffer. When the user requests a clip, the
-    buffer is trimmed to the selected region and exported as WAV.
-  - WaveformEditor: processes captured audio into waveform display data
-    (peaks, duration, region markers) for the QML visual editor.
+    a 15-second ring buffer. All channels record constantly.
+  - AudioClip: captured audio sample with trim region for editing.
+  - Publish flow: capture → edit/trim → publish to MP3 → optionally
+    assign to a soundboard slot.
 
 All recording is done by monitoring the existing virtual sinks —
 no additional PipeWire nodes are created.
@@ -18,7 +18,7 @@ import threading
 import time
 import wave
 import json
-import struct
+import os
 import numpy as np
 from pathlib import Path
 from typing import Optional
@@ -29,10 +29,12 @@ SAMPLE_RATE = 48000
 CHANNELS = 2
 BUFFER_SECONDS = 15
 BUFFER_SAMPLES = SAMPLE_RATE * CHANNELS * BUFFER_SECONDS  # 1,440,000 samples
-BUFFER_BYTES = BUFFER_SAMPLES * 4  # float32
 
 # Channel sinks we can record from (excluding stream/gaming which are mixes)
 RECORDABLE_CHANNELS = ["game", "chat", "media", "aux", "mic"]
+
+# Where published clips are saved
+PUBLISH_DIR = Path.home() / "Music" / "Soundboard REC"
 
 
 @dataclass
@@ -41,7 +43,7 @@ class SoundSlot:
     file_path: str = ""
     name: str = ""
     volume: float = 1.0
-    # Playback process handle
+    # Playback process handles (multiple for dual-output to main+stream)
     _procs: list = field(default_factory=list, repr=False)
 
     @property
@@ -80,6 +82,7 @@ class ChannelRecorder:
 
     Uses pw-cat --record --target=<sink>.monitor to capture audio from a virtual
     sink's monitor source. The ring buffer holds the last BUFFER_SECONDS of audio.
+    Always running once started — captures continuously.
     """
 
     def __init__(self, channel: str, sink_monitor_name: str):
@@ -122,7 +125,6 @@ class ChannelRecorder:
         Uses --container raw to get header-less PCM (no WAV header interference).
         Uses '-' as positional arg for stdout output.
         """
-        # Ensure we're targeting a monitor source
         target = self.sink_monitor_name
         if not target.endswith(".monitor"):
             target = f"{target}.monitor"
@@ -135,7 +137,7 @@ class ChannelRecorder:
             "--channels", str(CHANNELS),
             "--container", "raw",
             "--latency", "480",
-            "-"  # stdout (positional arg, not -o -)
+            "-"  # stdout (positional arg)
         ]
         try:
             self._proc = subprocess.Popen(
@@ -158,13 +160,12 @@ class ChannelRecorder:
         """Get an audio clip from the ring buffer.
 
         Args:
-            duration: Length of clip in seconds. None = full buffer.
+            duration: Length of clip in seconds. None = full buffer (15s).
         """
         with self._lock:
             if len(self._buffer) == 0:
                 return None
             samples = np.array(self._buffer, dtype=np.float32)
-            # Reshape to (N, 2) for stereo
             usable = (len(samples) // CHANNELS) * CHANNELS
             samples = samples[:usable].reshape(-1, CHANNELS)
             if duration is not None:
@@ -190,9 +191,7 @@ class ChannelRecorder:
             samples = np.array(self._buffer, dtype=np.float32)
             usable = (len(samples) // CHANNELS) * CHANNELS
             samples = samples[:usable].reshape(-1, CHANNELS)
-            # Downsample to mono
             mono = samples.mean(axis=1)
-            # Split into num_peaks chunks
             chunk = max(1, len(mono) // num_peaks)
             peaks = []
             for i in range(0, len(mono), chunk):
@@ -213,9 +212,10 @@ class SoundboardBackend:
 
     Manages:
       - 3 pages × 3x3 grid of sound slots (27 total)
-      - Sound file playback via pw-play
+      - Sound file playback via pw-play (dual-output to main mix + stream)
       - Per-channel ring buffer recording (game, chat, media, aux, mic)
-      - Clip export to WAV
+        — ALL channels record constantly, always-on
+      - Clip capture → trim/edit → publish to MP3 → slot assignment
     """
 
     def __init__(self, config_dir: Path):
@@ -230,12 +230,17 @@ class SoundboardBackend:
         self.current_page = 0
 
         # Output target for soundboard playback (default: main mix)
-        # Options: pulseforge_gaming (main mix), pulseforge_game, pulseforge_chat,
-        #          pulseforge_media, pulseforge_aux, pulseforge_stream
         self.output_target: str = "pulseforge_gaming"
 
-        # Channel recorders
+        # Channel recorders — always running
         self._recorders: dict[str, ChannelRecorder] = {}
+
+        # Current clip being edited
+        self._current_clip: Optional[AudioClip] = None
+
+        # Last published clip (for slot assignment flow)
+        self._last_published_path: str = ""
+        self._last_published_name: str = ""
 
         # Load config
         self._load_config()
@@ -299,17 +304,12 @@ class SoundboardBackend:
             slot.name = ""
             self._save_config()
 
-    # Output targets that get BOTH hardware and stream
+    # ─── Playback ───
+
     _DUAL_OUTPUT_TARGETS = {"pulseforge_gaming"}
 
     def _get_playback_targets(self) -> list:
-        """Determine which PipeWire sinks to play to based on output_target.
-
-        - Main Mix (gaming): play to gaming (hardware) + stream (for OBS)
-        - Stream Only: play to stream only
-        - Specific channel (game/chat/media/aux): play to that channel sink
-          (its existing loopbacks handle routing to gaming + stream)
-        """
+        """Determine which PipeWire sinks to play to based on output_target."""
         if self.output_target in self._DUAL_OUTPUT_TARGETS:
             return ["pulseforge_gaming", "pulseforge_stream"]
         return [self.output_target]
@@ -353,38 +353,36 @@ class SoundboardBackend:
             return any(p.poll() is None for p in slot._procs)
         return False
 
-    # ─── Channel Recording ───
+    # ─── Always-On Channel Recording ───
 
-    def start_recording(self, channel: str, sink_monitor_name: str):
-        """Start recording a channel's audio into a ring buffer.
+    def start_all_recording(self, channel_monitor_map: dict[str, str]):
+        """Start recording all channels at once.
 
         Args:
-            channel: Channel name (game, chat, media, aux, mic)
-            sink_monitor_name: Monitor source name (e.g. pulseforge_game.monitor)
+            channel_monitor_map: {channel: monitor_source_name}
+                e.g. {"game": "pulseforge_game.monitor", ...}
         """
-        if channel in self._recorders and self._recorders[channel].is_running:
-            return
-        recorder = ChannelRecorder(channel, sink_monitor_name)
-        recorder.start()
-        self._recorders[channel] = recorder
-
-    def stop_recording(self, channel: str):
-        """Stop recording a channel."""
-        if channel in self._recorders:
-            self._recorders[channel].stop()
-            del self._recorders[channel]
+        for channel, monitor_name in channel_monitor_map.items():
+            if channel not in self._recorders or not self._recorders[channel].is_running:
+                recorder = ChannelRecorder(channel, monitor_name)
+                recorder.start()
+                self._recorders[channel] = recorder
+                print(f"  Soundboard: always-on recording started for '{channel}'")
 
     def stop_all_recording(self):
         """Stop all channel recordings."""
         for channel in list(self._recorders.keys()):
-            self.stop_recording(channel)
+            self._recorders[channel].stop()
+            print(f"  Soundboard: recording stopped for '{channel}'")
+        self._recorders.clear()
 
-    def get_clip(self, channel: str, duration: float = None) -> Optional[AudioClip]:
-        """Get a captured clip from a channel's ring buffer."""
-        recorder = self._recorders.get(channel)
-        if not recorder:
-            return None
-        return recorder.get_clip(duration)
+    def get_recording_channels(self) -> list:
+        """Return list of currently recording channel names."""
+        return [ch for ch, r in self._recorders.items() if r.is_running]
+
+    def is_channel_recording(self, channel: str) -> bool:
+        rec = self._recorders.get(channel)
+        return rec is not None and rec.is_running
 
     def get_waveform(self, channel: str, num_peaks: int = 200) -> list:
         """Get waveform peaks for a channel's current buffer."""
@@ -393,41 +391,28 @@ class SoundboardBackend:
             return []
         return recorder.get_waveform(num_peaks)
 
-    def export_clip_wav(self, clip: AudioClip, output_path: str) -> bool:
-        """Export an AudioClip to a WAV file (trimmed to clip.trim_start..trim_end)."""
-        try:
-            samples = clip.trimmed_samples
-            # Convert float32 to int16
-            int_samples = (samples * 32767).clip(-32768, 32767).astype(np.int16)
-            with wave.open(output_path, "w") as wf:
-                wf.setnchannels(CHANNELS)
-                wf.setsampwidth(2)
-                wf.setframerate(clip.sample_rate)
-                wf.writeframes(int_samples.tobytes())
-            return True
-        except Exception as e:
-            print(f"  Soundboard: WAV export error: {e}")
-            return False
-
-    def get_recording_channels(self) -> list:
-        """Return list of currently recording channel names."""
-        return [ch for ch, r in self._recorders.items() if r.is_running]
-
-    # ─── Clip Management ───
+    # ─── Clip Capture & Editing ───
 
     def capture_clip(self, channel: str, duration: float = None) -> Optional[AudioClip]:
-        """Capture a clip and store it as the current clip for editing."""
-        self._current_clip = self.get_clip(channel, duration)
+        """Capture a clip from the ring buffer for editing.
+
+        Takes a snapshot of the last 15 seconds (or specified duration).
+        """
+        recorder = self._recorders.get(channel)
+        if not recorder:
+            print(f"  Soundboard: no recorder for channel '{channel}'")
+            return None
+        self._current_clip = recorder.get_clip(duration)
         if self._current_clip:
             print(f"  Soundboard: captured {self._current_clip.duration:.1f}s clip from {channel}")
         return self._current_clip
 
     def get_current_clip(self) -> Optional[AudioClip]:
         """Return the currently captured clip for editing."""
-        return getattr(self, '_current_clip', None)
+        return self._current_clip
 
     def get_clip_waveform(self, num_peaks: int = 200) -> list:
-        """Return waveform peaks for the current clip (not the live buffer)."""
+        """Return waveform peaks for the current clip."""
         clip = self.get_current_clip()
         if not clip:
             return []
@@ -464,14 +449,29 @@ class SoundboardBackend:
             "trimmed_duration": clip.trimmed_duration,
         }
 
+    def _export_clip_wav(self, clip: AudioClip, output_path: str) -> bool:
+        """Export an AudioClip to a WAV file (trimmed to clip.trim_start..trim_end)."""
+        try:
+            samples = clip.trimmed_samples
+            int_samples = (samples * 32767).clip(-32768, 32767).astype(np.int16)
+            with wave.open(output_path, "w") as wf:
+                wf.setnchannels(CHANNELS)
+                wf.setsampwidth(2)
+                wf.setframerate(clip.sample_rate)
+                wf.writeframes(int_samples.tobytes())
+            return True
+        except Exception as e:
+            print(f"  Soundboard: WAV export error: {e}")
+            return False
+
     def play_clip_preview(self) -> bool:
-        """Play the current trimmed clip via a temp WAV + pw-play (routed to output target(s))."""
+        """Play the current trimmed clip via a temp WAV + pw-play."""
         clip = self.get_current_clip()
         if not clip:
             return False
         self.stop_clip_preview()
         tmp_path = str(self._config_dir / "_preview.wav")
-        if not self.export_clip_wav(clip, tmp_path):
+        if not self._export_clip_wav(clip, tmp_path):
             return False
         self._clip_procs = []
         for target in self._get_playback_targets():
@@ -508,20 +508,100 @@ class SoundboardBackend:
         self.stop_clip_preview()
         self._current_clip = None
 
-    def set_output_target(self, target: str):
-        """Set the output target for soundboard playback.
+    # ─── Publish to MP3 ───
 
-        Args:
-            target: PipeWire sink name (e.g. pulseforge_gaming, pulseforge_stream)
+    def publish_clip(self) -> Optional[str]:
+        """Export the current trimmed clip as MP3 to ~/Music/Soundboard REC/.
+
+        Returns the path to the MP3 file, or None on failure.
+        The published clip is stored as _last_published for slot assignment.
         """
+        clip = self.get_current_clip()
+        if not clip:
+            return None
+
+        # Ensure publish directory exists
+        PUBLISH_DIR.mkdir(parents=True, exist_ok=True)
+
+        # Generate filename: channel_YYYY-MM-DD_HH-MM-SS.mp3
+        timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
+        channel = clip.channel or "clip"
+        mp3_name = f"{channel}_{timestamp}.mp3"
+        mp3_path = PUBLISH_DIR / mp3_name
+
+        # Export trimmed clip to temp WAV first
+        tmp_wav = str(self._config_dir / "_publish.wav")
+        if not self._export_clip_wav(clip, tmp_wav):
+            return None
+
+        # Convert to MP3 with ffmpeg
+        try:
+            cmd = [
+                "ffmpeg", "-y", "-i", tmp_wav,
+                "-codec:a", "libmp3lame", "-b:a", "192k",
+                str(mp3_path)
+            ]
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=10
+            )
+            if result.returncode != 0:
+                print(f"  Soundboard: ffmpeg error: {result.stderr[:200]}")
+                return None
+        except Exception as e:
+            print(f"  Soundboard: MP3 publish error: {e}")
+            return None
+
+        # Clean up temp WAV
+        try:
+            os.unlink(tmp_wav)
+        except Exception:
+            pass
+
+        self._last_published_path = str(mp3_path)
+        self._last_published_name = Path(mp3_path).stem
+        print(f"  Soundboard: published {mp3_path}")
+        return str(mp3_path)
+
+    def get_last_published(self) -> dict:
+        """Return info about the last published clip for slot assignment."""
+        return {
+            "path": self._last_published_path,
+            "name": self._last_published_name,
+            "available": bool(self._last_published_path),
+        }
+
+    def assign_published_clip(self, page: int, index: int) -> bool:
+        """Assign the last published MP3 to a soundboard slot.
+
+        Returns True on success.
+        """
+        if not self._last_published_path:
+            return False
+        if not Path(self._last_published_path).exists():
+            return False
+        self.assign_sound(page, index, self._last_published_path, self._last_published_name)
+        print(f"  Soundboard: assigned '{self._last_published_name}' to page {page} slot {index}")
+        return True
+
+    def clear_published(self):
+        """Clear the last published clip (cancel assignment mode)."""
+        self._last_published_path = ""
+        self._last_published_name = ""
+
+    # ─── Output Target ───
+
+    def set_output_target(self, target: str):
         self.output_target = target
 
     def get_output_target(self) -> str:
         return self.output_target
+
+    # ─── Lifecycle ───
 
     def cleanup(self):
         """Stop all playback and recording."""
         for page in range(3):
             for i in range(9):
                 self.stop_playback(page, i)
+        self.stop_clip_preview()
         self.stop_all_recording()

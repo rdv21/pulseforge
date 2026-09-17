@@ -107,6 +107,7 @@ class PulseForgeBridge(QObject):
         self._setup_vu_meters()
         self._refresh_devices()
         self._refresh_apps()
+        self._start_soundboard_recording()
 
         self._vu_timer.start()
         self._app_timer.start()
@@ -115,6 +116,17 @@ class PulseForgeBridge(QObject):
         self._device_timer.start()
 
         self.statusMessage.emit("PulseForge ready")
+
+    def _start_soundboard_recording(self):
+        """Start always-on recording for all channels."""
+        from .backend import pipewire_ctl as pw
+        monitor_map = {}
+        for channel in ["game", "chat", "media", "aux"]:
+            internal = pw._VIRTUAL_SINK_INTERNAL.get(channel, f"pulseforge_{channel}")
+            monitor_map[channel] = f"{internal}.monitor"
+        # Mic uses the processed mic source
+        monitor_map["mic"] = "pulseforge.mic.processed"
+        self._soundboard.start_all_recording(monitor_map)
 
     def stop(self):
         """Clean shutdown — stop everything and remove PipeWire objects."""
@@ -129,6 +141,9 @@ class PulseForgeBridge(QObject):
 
         # Kill any remaining pw-cat processes (graceful via ProcessManager)
         get_manager().cleanup_orphans()
+
+        # Stop soundboard (recording + playback)
+        self._cleanup_soundboard()
 
         # Remove all PulseForge PipeWire objects
         print("  Shutdown: cleaning up PulseForge objects...")
@@ -1402,7 +1417,7 @@ class PulseForgeBridge(QObject):
     @Slot(str, result=bool)
     def isChannelRecording(self, channel: str):
         """Check if a channel is being recorded."""
-        return channel in self._soundboard.get_recording_channels()
+        return self._soundboard.is_channel_recording(channel)
 
     @Slot(result='QVariant')
     def getRecordingChannels(self):
@@ -1455,19 +1470,41 @@ class PulseForgeBridge(QObject):
         """Discard the current clip."""
         self._soundboard.clear_clip()
 
-    @Slot(str)
-    def exportClip(self, channel: str):
-        """Export the current clip to a WAV file."""
-        from PySide6.QtWidgets import QFileDialog
-        clip = self._soundboard.get_current_clip()
-        if not clip:
-            return
-        file_path, _ = QFileDialog.getSaveFileName(
-            None, "Export Clip", f"{channel}_clip.wav", "WAV Files (*.wav)"
-        )
-        if file_path:
-            if self._soundboard.export_clip_wav(clip, file_path):
-                self.statusMessage.emit(f"Exported to {file_path}")
+    @Slot(result=str)
+    def publishClip(self):
+        """Publish the current trimmed clip as MP3 to ~/Music/Soundboard REC/.
+
+        Returns the MP3 path on success, empty string on failure.
+        After publishing, the clip is available for slot assignment via
+        assignPublishedClip().
+        """
+        path = self._soundboard.publish_clip()
+        if path:
+            self.statusMessage.emit(f"Published: {Path(path).name}")
+        else:
+            self.statusMessage.emit("Publish failed")
+        return path or ""
+
+    @Slot(result='QVariant')
+    def getLastPublished(self):
+        """Return info about the last published clip for slot assignment."""
+        return self._soundboard.get_last_published()
+
+    @Slot(int, int, result=bool)
+    def assignPublishedClip(self, page: int, index: int):
+        """Assign the last published MP3 to a soundboard slot.
+
+        Returns True on success.
+        """
+        ok = self._soundboard.assign_published_clip(page, index)
+        if ok:
+            self.soundboardChanged.emit(page)
+        return ok
+
+    @Slot()
+    def clearPublished(self):
+        """Cancel slot assignment mode."""
+        self._soundboard.clear_published()
 
     def _cleanup_soundboard(self):
         self._soundboard.cleanup()
