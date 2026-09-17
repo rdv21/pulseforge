@@ -42,7 +42,7 @@ class SoundSlot:
     name: str = ""
     volume: float = 1.0
     # Playback process handle
-    _proc: Optional[subprocess.Popen] = field(default=None, repr=False)
+    _procs: list = field(default_factory=list, repr=False)
 
     @property
     def is_assigned(self) -> bool:
@@ -299,42 +299,58 @@ class SoundboardBackend:
             slot.name = ""
             self._save_config()
 
+    # Output targets that get BOTH hardware and stream
+    _DUAL_OUTPUT_TARGETS = {"pulseforge_gaming"}
+
+    def _get_playback_targets(self) -> list:
+        """Determine which PipeWire sinks to play to based on output_target.
+
+        - Main Mix (gaming): play to gaming (hardware) + stream (for OBS)
+        - Stream Only: play to stream only
+        - Specific channel (game/chat/media/aux): play to that channel sink
+          (its existing loopbacks handle routing to gaming + stream)
+        """
+        if self.output_target in self._DUAL_OUTPUT_TARGETS:
+            return ["pulseforge_gaming", "pulseforge_stream"]
+        return [self.output_target]
+
     def play_sound(self, page: int, index: int):
-        """Play the sound assigned to a slot, routed to the output target."""
+        """Play the sound assigned to a slot, routed to the output target(s)."""
         slot = self.get_slot(page, index)
         if not slot or not slot.is_assigned:
             return
         self.stop_playback(page, index)
-        try:
-            cmd = ["pw-play", slot.file_path]
-            if self.output_target:
-                cmd.extend(["--target", self.output_target])
-            slot._proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        except Exception as e:
-            print(f"  Soundboard: playback error: {e}")
+        for target in self._get_playback_targets():
+            try:
+                cmd = ["pw-play", slot.file_path, "--target", target]
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                slot._procs.append(proc)
+            except Exception as e:
+                print(f"  Soundboard: playback error ({target}): {e}")
 
     def stop_playback(self, page: int, index: int):
         """Stop playback of a slot."""
         slot = self.get_slot(page, index)
-        if slot and slot._proc:
-            try:
-                slot._proc.terminate()
-                slot._proc.wait(timeout=1)
-            except Exception:
+        if slot and slot._procs:
+            for proc in slot._procs:
                 try:
-                    slot._proc.kill()
+                    proc.terminate()
+                    proc.wait(timeout=1)
                 except Exception:
-                    pass
-            slot._proc = None
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+            slot._procs.clear()
 
     def is_playing(self, page: int, index: int) -> bool:
         slot = self.get_slot(page, index)
-        if slot and slot._proc:
-            return slot._proc.poll() is None
+        if slot and slot._procs:
+            return any(p.poll() is None for p in slot._procs)
         return False
 
     # ─── Channel Recording ───
@@ -449,7 +465,7 @@ class SoundboardBackend:
         }
 
     def play_clip_preview(self) -> bool:
-        """Play the current trimmed clip via a temp WAV + pw-play (routed to output target)."""
+        """Play the current trimmed clip via a temp WAV + pw-play (routed to output target(s))."""
         clip = self.get_current_clip()
         if not clip:
             return False
@@ -457,24 +473,23 @@ class SoundboardBackend:
         tmp_path = str(self._config_dir / "_preview.wav")
         if not self.export_clip_wav(clip, tmp_path):
             return False
-        try:
-            cmd = ["pw-play", tmp_path]
-            if self.output_target:
-                cmd.extend(["--target", self.output_target])
-            self._clip_proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            return True
-        except Exception as e:
-            print(f"  Soundboard: clip preview error: {e}")
-            return False
+        self._clip_procs = []
+        for target in self._get_playback_targets():
+            try:
+                cmd = ["pw-play", tmp_path, "--target", target]
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                self._clip_procs.append(proc)
+            except Exception as e:
+                print(f"  Soundboard: clip preview error ({target}): {e}")
+        return bool(self._clip_procs)
 
     def stop_clip_preview(self):
         """Stop clip preview playback."""
-        proc = getattr(self, '_clip_proc', None)
-        if proc:
+        for proc in getattr(self, '_clip_procs', []):
             try:
                 proc.terminate()
                 proc.wait(timeout=1)
@@ -483,11 +498,10 @@ class SoundboardBackend:
                     proc.kill()
                 except Exception:
                     pass
-            self._clip_proc = None
+        self._clip_procs = []
 
     def is_clip_playing(self) -> bool:
-        proc = getattr(self, '_clip_proc', None)
-        return proc is not None and proc.poll() is None
+        return any(p.poll() is None for p in getattr(self, '_clip_procs', []))
 
     def clear_clip(self):
         """Discard the current clip."""

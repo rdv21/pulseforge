@@ -256,7 +256,7 @@ Window {
             ComboBox {
                 id: outputCombo
                 Layout.fillWidth: true
-                model: ["Main Mix", "Game", "Chat", "Media", "Aux", "Stream Only"]
+                model: ["Main Mix + Stream", "Game", "Chat", "Media", "Aux", "Stream Only"]
                 font.pixelSize: 10
                 onActivated: {
                     var target = _indexToTarget(currentIndex)
