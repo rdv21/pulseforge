@@ -374,6 +374,100 @@ class SoundboardBackend:
         """Return list of currently recording channel names."""
         return [ch for ch, r in self._recorders.items() if r.is_running]
 
+    # ─── Clip Management ───
+
+    def capture_clip(self, channel: str, duration: float = None) -> Optional[AudioClip]:
+        """Capture a clip and store it as the current clip for editing."""
+        self._current_clip = self.get_clip(channel, duration)
+        if self._current_clip:
+            print(f"  Soundboard: captured {self._current_clip.duration:.1f}s clip from {channel}")
+        return self._current_clip
+
+    def get_current_clip(self) -> Optional[AudioClip]:
+        """Return the currently captured clip for editing."""
+        return getattr(self, '_current_clip', None)
+
+    def get_clip_waveform(self, num_peaks: int = 200) -> list:
+        """Return waveform peaks for the current clip (not the live buffer)."""
+        clip = self.get_current_clip()
+        if not clip:
+            return []
+        mono = clip.samples.mean(axis=1) if clip.samples.ndim == 2 else clip.samples
+        chunk = max(1, len(mono) // num_peaks)
+        peaks = []
+        for i in range(0, len(mono), chunk):
+            block = mono[i:i+chunk]
+            if len(block) > 0:
+                peak = float(np.max(np.abs(block)))
+                rms = float(np.sqrt(np.mean(block**2)))
+                peaks.append({"peak": peak, "rms": rms})
+        return peaks
+
+    def set_clip_trim(self, trim_start: float, trim_end: float):
+        """Set the trim region on the current clip (seconds)."""
+        clip = self.get_current_clip()
+        if not clip:
+            return
+        clip.trim_start = max(0.0, min(trim_start, clip.duration))
+        clip.trim_end = max(clip.trim_start, min(trim_end, clip.duration))
+
+    def get_clip_info(self) -> dict:
+        """Return info about the current clip for QML."""
+        clip = self.get_current_clip()
+        if not clip:
+            return {"available": False, "duration": 0, "channel": "", "trim_start": 0, "trim_end": 0}
+        return {
+            "available": True,
+            "duration": clip.duration,
+            "channel": clip.channel,
+            "trim_start": clip.trim_start,
+            "trim_end": clip.trim_end,
+            "trimmed_duration": clip.trimmed_duration,
+        }
+
+    def play_clip_preview(self) -> bool:
+        """Play the current trimmed clip via a temp WAV + pw-play."""
+        clip = self.get_current_clip()
+        if not clip:
+            return False
+        self.stop_clip_preview()
+        tmp_path = str(self._config_dir / "_preview.wav")
+        if not self.export_clip_wav(clip, tmp_path):
+            return False
+        try:
+            self._clip_proc = subprocess.Popen(
+                ["pw-play", tmp_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return True
+        except Exception as e:
+            print(f"  Soundboard: clip preview error: {e}")
+            return False
+
+    def stop_clip_preview(self):
+        """Stop clip preview playback."""
+        proc = getattr(self, '_clip_proc', None)
+        if proc:
+            try:
+                proc.terminate()
+                proc.wait(timeout=1)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            self._clip_proc = None
+
+    def is_clip_playing(self) -> bool:
+        proc = getattr(self, '_clip_proc', None)
+        return proc is not None and proc.poll() is None
+
+    def clear_clip(self):
+        """Discard the current clip."""
+        self.stop_clip_preview()
+        self._current_clip = None
+
     def cleanup(self):
         """Stop all playback and recording."""
         for page in range(3):

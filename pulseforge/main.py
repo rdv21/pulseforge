@@ -1399,16 +1399,50 @@ class PulseForgeBridge(QObject):
 
     @Slot(str)
     def captureClip(self, channel: str):
-        """Capture a clip from the ring buffer and open the waveform editor."""
-        self._captured_clip = self._soundboard.get_clip(channel)
-        if self._captured_clip:
-            print(f"  Soundboard: captured {self._captured_clip.duration:.1f}s clip from {channel}")
+        """Capture a clip from the ring buffer for editing."""
+        clip = self._soundboard.capture_clip(channel)
+        if clip:
+            self.statusMessage.emit(f"Captured {clip.duration:.1f}s clip from {channel}")
+
+    @Slot(result='QVariant')
+    def getClipInfo(self):
+        """Return info about the current clip for QML."""
+        return self._soundboard.get_clip_info()
+
+    @Slot(result='QVariant')
+    def getClipWaveform(self):
+        """Return waveform peaks for the current captured clip."""
+        return self._soundboard.get_clip_waveform(200)
+
+    @Slot(float, float)
+    def setClipTrim(self, trim_start: float, trim_end: float):
+        """Set the trim region on the current clip (seconds)."""
+        self._soundboard.set_clip_trim(trim_start, trim_end)
+
+    @Slot()
+    def playClipPreview(self):
+        """Play the current trimmed clip."""
+        self._soundboard.play_clip_preview()
+
+    @Slot()
+    def stopClipPreview(self):
+        """Stop clip preview playback."""
+        self._soundboard.stop_clip_preview()
+
+    @Slot(result=bool)
+    def isClipPlaying(self):
+        return self._soundboard.is_clip_playing()
+
+    @Slot()
+    def clearClip(self):
+        """Discard the current clip."""
+        self._soundboard.clear_clip()
 
     @Slot(str)
     def exportClip(self, channel: str):
         """Export the current clip to a WAV file."""
         from PySide6.QtWidgets import QFileDialog
-        clip = self._soundboard.get_clip(channel)
+        clip = self._soundboard.get_current_clip()
         if not clip:
             return
         file_path, _ = QFileDialog.getSaveFileName(
@@ -1416,7 +1450,7 @@ class PulseForgeBridge(QObject):
         )
         if file_path:
             if self._soundboard.export_clip_wav(clip, file_path):
-                print(f"  Soundboard: exported to {file_path}")
+                self.statusMessage.emit(f"Exported to {file_path}")
 
     def _cleanup_soundboard(self):
         self._soundboard.cleanup()
