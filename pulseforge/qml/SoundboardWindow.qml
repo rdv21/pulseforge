@@ -940,9 +940,31 @@ Window {
 
                         Item { Layout.fillWidth: true }
 
-                        // ─── Publish button ───
+                        // ─── Clip name input + Publish ───
+                        TextField {
+                            id: clipNameInput
+                            placeholderText: "Clip name (auto if empty)"
+                            text: ""
+                            font.pixelSize: 10
+                            color: sbWindow.textColor
+                            Layout.preferredWidth: 140
+                            height: 30
+                            verticalAlignment: TextInput.AlignVCenter
+                            background: Rectangle {
+                                color: sbWindow.bgDark
+                                border.color: clipNameInput.activeFocus ? sbWindow.publishGold : sbWindow.borderColor
+                                border.width: 1
+                                radius: 5
+                            }
+
+                            onAccepted: publishBtn.clicked()
+
+                            Keys.onReturnPressed: publishBtn.clicked()
+                        }
+
                         Button {
-                            text: "★ Publish MP3"
+                            id: publishBtn
+                            text: "★ Publish"
                             enabled: hasClip
                             height: 30
                             contentItem: Text {
@@ -960,16 +982,16 @@ Window {
                                 border.width: 1
                                 radius: 5
                                 implicitHeight: 30
-                                implicitWidth: 110
+                                implicitWidth: 70
                             }
                             onClicked: {
-                                var path = PulseForge.publishClip()
+                                var path = PulseForge.publishClip(clipNameInput.text)
                                 if (path && path.length > 0) {
                                     var info = PulseForge.getLastPublished()
                                     publishedName = info.name
                                     assignMode = true
                                     editorMode = false
-                                    // User can now click a slot to assign, or publish again
+                                    clipNameInput.text = ""
                                 }
                             }
                         }

@@ -576,9 +576,12 @@ class SoundboardBackend:
 
     # ─── Publish to MP3 ───
 
-    def publish_clip(self) -> Optional[str]:
+    def publish_clip(self, custom_name: str = "") -> Optional[str]:
         """Export the current trimmed clip as MP3 to ~/Music/Soundboard REC/.
 
+        Args:
+            custom_name: User-specified filename (without extension). If empty,
+                        uses channel_YYYY-MM-DD_HH-MM-SS.mp3.
         Returns the path to the MP3 file, or None on failure.
         The published clip is stored as _last_published for slot assignment.
         """
@@ -589,10 +592,16 @@ class SoundboardBackend:
         # Ensure publish directory exists
         PUBLISH_DIR.mkdir(parents=True, exist_ok=True)
 
-        # Generate filename: channel_YYYY-MM-DD_HH-MM-SS.mp3
-        timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
-        channel = clip.channel or "clip"
-        mp3_name = f"{channel}_{timestamp}.mp3"
+        # Generate filename
+        if custom_name:
+            # Sanitize: remove path separators, trim, keep it filesystem-safe
+            safe_name = "".join(c for c in custom_name if c not in "/\\:*?\"<>|").strip()
+            safe_name = safe_name or "clip"
+            mp3_name = f"{safe_name}.mp3"
+        else:
+            timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
+            channel = clip.channel or "clip"
+            mp3_name = f"{channel}_{timestamp}.mp3"
         mp3_path = PUBLISH_DIR / mp3_name
 
         # Export trimmed clip to temp WAV first

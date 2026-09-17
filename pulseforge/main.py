@@ -1470,15 +1470,15 @@ class PulseForgeBridge(QObject):
         """Discard the current clip."""
         self._soundboard.clear_clip()
 
-    @Slot(result=str)
-    def publishClip(self):
+    @Slot(str, result=str)
+    def publishClip(self, custom_name: str):
         """Publish the current trimmed clip as MP3 to ~/Music/Soundboard REC/.
 
+        Args:
+            custom_name: User-specified filename (without extension), or empty for auto.
         Returns the MP3 path on success, empty string on failure.
-        After publishing, the clip is available for slot assignment via
-        assignPublishedClip().
         """
-        path = self._soundboard.publish_clip()
+        path = self._soundboard.publish_clip(custom_name)
         if path:
             self.statusMessage.emit(f"Published: {Path(path).name}")
         else:
