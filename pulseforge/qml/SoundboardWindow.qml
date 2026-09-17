@@ -126,9 +126,14 @@ Window {
             if (typeof PulseForge !== "undefined") {
                 liveWaveform = PulseForge.getChannelWaveform(selectedChannel)
                 liveWaveformCanvas.requestPaint()
+                // Update REC indicator state
+                recState = PulseForge.isRecordingEnabled() && PulseForge.isChannelRecording(selectedChannel)
             }
         }
     }
+
+    // REC indicator state (updated by timer, not direct slot binding)
+    property bool recState: false
 
     ColumnLayout {
         anchors.fill: parent
@@ -517,16 +522,18 @@ Window {
                         }
 
                         // Always-on REC indicator
+                        // REC indicator (pulsing dot + text)
+                        // Uses recState property updated by liveWaveformTimer
                         Rectangle {
                             width: 8
                             height: 8
                             radius: 4
                             color: sbWindow.recordRed
                             anchors.verticalCenter: parent.verticalCenter
-                            visible: typeof PulseForge !== "undefined" && PulseForge.isRecordingEnabled() && PulseForge.isChannelRecording(selectedChannel)
+                            visible: sbWindow.recState
 
                             SequentialAnimation on opacity {
-                                running: true
+                                running: sbWindow.recState
                                 loops: Animation.Infinite
                                 NumberAnimation { to: 0.3; duration: 600 }
                                 NumberAnimation { to: 1.0; duration: 600 }
@@ -538,7 +545,7 @@ Window {
                             font.pixelSize: 10
                             font.bold: true
                             color: sbWindow.recordRed
-                            visible: typeof PulseForge !== "undefined" && PulseForge.isRecordingEnabled() && PulseForge.isChannelRecording(selectedChannel)
+                            visible: sbWindow.recState
                         }
                     }
 
@@ -634,7 +641,7 @@ Window {
 
                         Button {
                             text: "Capture Clip (15s)"
-                            enabled: typeof PulseForge !== "undefined" && PulseForge.isRecordingEnabled() && PulseForge.isChannelRecording(selectedChannel)
+                            enabled: sbWindow.recState
                             height: 32
                             contentItem: Text {
                                 text: parent.text
