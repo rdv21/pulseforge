@@ -123,9 +123,9 @@ class PulseForgeBridge(QObject):
         monitor_map = {}
         for channel in ["game", "chat", "media", "aux"]:
             internal = pw._VIRTUAL_SINK_INTERNAL.get(channel, f"pulseforge_{channel}")
-            monitor_map[channel] = f"{internal}.monitor"
-        # Mic uses the processed mic source
-        monitor_map["mic"] = "pulseforge.mic.processed"
+            monitor_map[channel] = (f"{internal}.monitor", 2)  # stereo monitors
+        # Mic uses the processed mic source directly (1ch mono)
+        monitor_map["mic"] = ("pulseforge.mic.processed", 1)
         self._soundboard.start_all_recording(monitor_map)
 
     def stop(self):

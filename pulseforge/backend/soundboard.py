@@ -80,15 +80,18 @@ class AudioClip:
 class ChannelRecorder:
     """Records a 15-second ring buffer from a PipeWire channel sink monitor.
 
-    Uses pw-cat --record --target=<sink>.monitor to capture audio from a virtual
-    sink's monitor source. The ring buffer holds the last BUFFER_SECONDS of audio.
+    Uses pw-cat --record --target=<source> to capture audio. For sink channels
+    (game/chat/media/aux) this is the sink's .monitor source. For mic, it's
+    the pulseforge.mic.processed source directly (1 channel mono).
+    The ring buffer holds the last BUFFER_SECONDS of audio.
     Always running once started — captures continuously.
     """
 
-    def __init__(self, channel: str, sink_monitor_name: str):
+    def __init__(self, channel: str, source_name: str, channels: int = CHANNELS):
         self.channel = channel
-        self.sink_monitor_name = sink_monitor_name  # e.g. "pulseforge_game.monitor"
-        self._buffer = deque(maxlen=BUFFER_SAMPLES)
+        self.source_name = source_name  # e.g. "pulseforge_game.monitor" or "pulseforge.mic.processed"
+        self.channels = channels  # 2 for stereo monitors, 1 for mono mic
+        self._buffer = deque(maxlen=SAMPLE_RATE * channels * BUFFER_SECONDS)
         self._proc: Optional[subprocess.Popen] = None
         self._thread: Optional[threading.Thread] = None
         self._running = False
@@ -125,8 +128,10 @@ class ChannelRecorder:
         Uses --container raw to get header-less PCM (no WAV header interference).
         Uses '-' as positional arg for stdout output.
         """
-        target = self.sink_monitor_name
-        if not target.endswith(".monitor"):
+        target = self.source_name
+        # Only append .monitor if target is a sink name (not already a source)
+        # pulseforge.mic.processed is a source, not a sink — don't append .monitor
+        if not target.endswith(".monitor") and not target.startswith("pulseforge.mic"):
             target = f"{target}.monitor"
 
         cmd = [
@@ -134,7 +139,7 @@ class ChannelRecorder:
             "--target", target,
             "--format", "f32",
             "--rate", str(SAMPLE_RATE),
-            "--channels", str(CHANNELS),
+            "--channels", str(self.channels),
             "--container", "raw",
             "--latency", "480",
             "-"  # stdout (positional arg)
@@ -143,7 +148,7 @@ class ChannelRecorder:
             self._proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
             )
-            chunk_size = 480 * CHANNELS * 4  # 480 frames * 2ch * 4 bytes (float32)
+            chunk_size = 480 * self.channels * 4  # 480 frames * Nch * 4 bytes (float32)
             while self._running and self._proc.poll() is None:
                 data = self._proc.stdout.read(chunk_size)
                 if not data:
@@ -166,8 +171,9 @@ class ChannelRecorder:
             if len(self._buffer) == 0:
                 return None
             samples = np.array(self._buffer, dtype=np.float32)
-            usable = (len(samples) // CHANNELS) * CHANNELS
-            samples = samples[:usable].reshape(-1, CHANNELS)
+            ch = self.channels
+            usable = (len(samples) // ch) * ch
+            samples = samples[:usable].reshape(-1, ch)
             if duration is not None:
                 n = int(duration * SAMPLE_RATE)
                 samples = samples[-n:]
@@ -189,9 +195,10 @@ class ChannelRecorder:
             if len(self._buffer) == 0:
                 return []
             samples = np.array(self._buffer, dtype=np.float32)
-            usable = (len(samples) // CHANNELS) * CHANNELS
-            samples = samples[:usable].reshape(-1, CHANNELS)
-            mono = samples.mean(axis=1)
+            ch = self.channels
+            usable = (len(samples) // ch) * ch
+            samples = samples[:usable].reshape(-1, ch)
+            mono = samples.mean(axis=1) if ch > 1 else samples
             chunk = max(1, len(mono) // num_peaks)
             peaks = []
             for i in range(0, len(mono), chunk):
@@ -355,19 +362,19 @@ class SoundboardBackend:
 
     # ─── Always-On Channel Recording ───
 
-    def start_all_recording(self, channel_monitor_map: dict[str, str]):
+    def start_all_recording(self, channel_monitor_map: dict):
         """Start recording all channels at once.
 
         Args:
-            channel_monitor_map: {channel: monitor_source_name}
-                e.g. {"game": "pulseforge_game.monitor", ...}
+            channel_monitor_map: {channel: (source_name, channels)}
+                e.g. {"game": ("pulseforge_game.monitor", 2), "mic": ("pulseforge.mic.processed", 1)}
         """
-        for channel, monitor_name in channel_monitor_map.items():
+        for channel, (source_name, channels) in channel_monitor_map.items():
             if channel not in self._recorders or not self._recorders[channel].is_running:
-                recorder = ChannelRecorder(channel, monitor_name)
+                recorder = ChannelRecorder(channel, source_name, channels)
                 recorder.start()
                 self._recorders[channel] = recorder
-                print(f"  Soundboard: always-on recording started for '{channel}'")
+                print(f"  Soundboard: always-on recording started for '{channel}' ({channels}ch)")
 
     def stop_all_recording(self):
         """Stop all channel recordings."""
@@ -453,9 +460,10 @@ class SoundboardBackend:
         """Export an AudioClip to a WAV file (trimmed to clip.trim_start..trim_end)."""
         try:
             samples = clip.trimmed_samples
+            # Convert float32 to int16
             int_samples = (samples * 32767).clip(-32768, 32767).astype(np.int16)
             with wave.open(output_path, "w") as wf:
-                wf.setnchannels(CHANNELS)
+                wf.setnchannels(samples.shape[1] if samples.ndim == 2 else 1)
                 wf.setsampwidth(2)
                 wf.setframerate(clip.sample_rate)
                 wf.writeframes(int_samples.tobytes())
