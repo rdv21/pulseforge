@@ -179,7 +179,10 @@ class ChannelRecorder:
             self._running = False
 
     def _redirect_to_monitor(self, target_source: str, app_tag: str) -> bool:
-        """Find our pw-cat source-output by app tag and redirect to target source."""
+        """Find our pw-cat source-output by app tag and redirect to target source.
+
+        Must match the EXACT app tag to avoid grabbing another channel's recorder.
+        """
         try:
             r = subprocess.run(
                 ["pactl", "list", "source-outputs"],
@@ -188,7 +191,8 @@ class ChannelRecorder:
             blocks = r.stdout.split("Source Output #")
             for block in blocks[1:]:
                 idx = block.split("\n")[0].strip()
-                if app_tag in block:
+                # Match EXACT tag — use quotes to avoid partial matches
+                if f'application.name = "{app_tag}"' in block:
                     r2 = subprocess.run(
                         ["pactl", "move-source-output", idx, target_source],
                         capture_output=True, text=True, timeout=5
@@ -196,8 +200,12 @@ class ChannelRecorder:
                     if r2.returncode == 0:
                         print(f"  ChannelRecorder[{self.channel}]: redirected to {target_source}")
                         return True
+                    else:
+                        print(f"  ChannelRecorder[{self.channel}]: move failed: {r2.stderr.strip()}")
+                        return False
             return False
-        except Exception:
+        except Exception as e:
+            print(f"  ChannelRecorder[{self.channel}]: redirect error: {e}")
             return False
 
     def get_clip(self, duration: float = None) -> Optional[AudioClip]:
@@ -404,16 +412,27 @@ class SoundboardBackend:
     def start_all_recording(self, channel_monitor_map: dict):
         """Start recording all channels at once.
 
+        Staggers start by 0.5s per channel to avoid move-source-output races.
+
         Args:
             channel_monitor_map: {channel: (source_name, channels)}
-                e.g. {"game": ("pulseforge_game.monitor", 2), "mic": ("pulseforge.mic.processed", 1)}
         """
-        for channel, (source_name, channels) in channel_monitor_map.items():
-            if channel not in self._recorders or not self._recorders[channel].is_running:
-                recorder = ChannelRecorder(channel, source_name, channels)
+        import threading
+        def _start_channel(ch, source_name, channels, delay):
+            time.sleep(delay)
+            if ch not in self._recorders or not self._recorders[ch].is_running:
+                recorder = ChannelRecorder(ch, source_name, channels)
                 recorder.start()
-                self._recorders[channel] = recorder
-                print(f"  Soundboard: always-on recording started for '{channel}' ({channels}ch)")
+                self._recorders[ch] = recorder
+                print(f"  Soundboard: always-on recording started for '{ch}' ({channels}ch)")
+
+        delay = 0.0
+        for channel, (source_name, channels) in channel_monitor_map.items():
+            threading.Thread(
+                target=_start_channel, args=(channel, source_name, channels, delay),
+                daemon=True
+            ).start()
+            delay += 1.0  # 1s stagger between channels
 
     def stop_all_recording(self):
         """Stop all channel recordings."""
