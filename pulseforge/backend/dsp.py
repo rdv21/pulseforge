@@ -896,10 +896,14 @@ class AFXNoiseProcessor:
         """Set noise removal intensity (0.0-1.0)."""
         self._intensity = max(0.0, min(1.0, intensity))
         if self._lib and self._handle and self._supports_intensity:
-            self._lib.NvAFX_SetFloat(
+            status = self._lib.NvAFX_SetFloat(
                 self._handle, self._PARAM_INTENSITY_RATIO,
                 ctypes.c_float(self._intensity)
             )
+            if status != self._NVAFX_STATUS_SUCCESS:
+                print(f"  AFX: SetFloat(intensity={self._intensity:.2f}) failed (status={status})")
+            else:
+                print(f"  AFX: intensity set to {self._intensity:.2f}")
 
     def set_enabled(self, enabled: bool):
         self.enabled = enabled
