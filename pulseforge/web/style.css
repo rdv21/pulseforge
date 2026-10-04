@@ -1,0 +1,849 @@
+/* PulseForge Web Control Panel — VR-optimized dark theme
+   Designed for 1280×720 SteamVR overlay. Large touch targets, high contrast. */
+
+:root {
+    --bg: #0d0d12;
+    --surface: #16161e;
+    --surface2: #1e1e28;
+    --surface3: #262633;
+    --accent: #7c5cfc;
+    --accent2: #5c3ce0;
+    --accent-glow: rgba(124, 92, 252, 0.25);
+    --text: #e8e8f0;
+    --text-dim: #8888a0;
+    --text-bright: #ffffff;
+    --green: #4ecf6f;
+    --red: #ff4e6f;
+    --orange: #ff9b44;
+    --yellow: #ffd24e;
+    --radius: 12px;
+    --radius-sm: 8px;
+    --shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+html, body {
+    height: 100%;
+    overflow: hidden;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    user-select: none;
+    -webkit-user-select: none;
+    display: flex;
+    flex-direction: column;
+    touch-action: manipulation;
+}
+
+/* ─── Header / Tabs ─── */
+
+#header {
+    background: var(--surface);
+    display: flex;
+    align-items: center;
+    padding: 0 16px;
+    height: 52px;
+    border-bottom: 1px solid var(--surface2);
+    flex-shrink: 0;
+    z-index: 10;
+}
+
+#logo {
+    font-size: 17px;
+    font-weight: 700;
+    color: var(--accent);
+    margin-right: 20px;
+    white-space: nowrap;
+}
+
+#tabs {
+    display: flex;
+    gap: 4px;
+    flex: 1;
+}
+
+.tab-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-dim);
+    font-size: 14px;
+    font-weight: 600;
+    padding: 8px 18px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: all 0.15s;
+    white-space: nowrap;
+}
+
+.tab-btn:hover {
+    background: var(--surface2);
+    color: var(--text);
+}
+
+.tab-btn.active {
+    background: var(--accent);
+    color: var(--text-bright);
+    box-shadow: 0 0 20px var(--accent-glow);
+}
+
+#status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+    margin-left: 8px;
+}
+
+#status-dot.disconnected {
+    background: var(--red);
+}
+
+/* ─── Main content ─── */
+
+#content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    -webkit-overflow-scrolling: touch;
+}
+
+.tab-panel {
+    display: none;
+}
+
+.tab-panel.active {
+    display: block;
+}
+
+/* ─── Soundboard ─── */
+
+#soundboard-pages {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.page-btn {
+    background: var(--surface2);
+    border: 2px solid transparent;
+    color: var(--text);
+    font-size: 15px;
+    font-weight: 600;
+    padding: 8px 20px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.page-btn:hover {
+    background: var(--surface3);
+}
+
+.page-btn.active {
+    border-color: var(--accent);
+    background: var(--surface3);
+    color: var(--text-bright);
+}
+
+#soundboard-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    margin-bottom: 16px;
+}
+
+.sb-slot {
+    background: var(--surface);
+    border: 2px solid var(--surface2);
+    border-radius: var(--radius);
+    padding: 14px;
+    min-height: 100px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: all 0.15s;
+    position: relative;
+    overflow: hidden;
+}
+
+.sb-slot:hover {
+    border-color: var(--surface3);
+}
+
+.sb-slot.assigned {
+    background: var(--surface2);
+    border-color: var(--accent);
+}
+
+.sb-slot.playing {
+    border-color: var(--green);
+    box-shadow: 0 0 20px rgba(78, 207, 111, 0.3);
+    animation: pulse-glow 0.8s ease infinite alternate;
+}
+
+@keyframes pulse-glow {
+    from { box-shadow: 0 0 10px rgba(78, 207, 111, 0.2); }
+    to { box-shadow: 0 0 25px rgba(78, 207, 111, 0.5); }
+}
+
+.sb-slot-name {
+    font-size: 14px;
+    font-weight: 600;
+    text-align: center;
+    margin-bottom: 4px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 100%;
+}
+
+.sb-slot-empty {
+    color: var(--text-dim);
+    font-size: 13px;
+}
+
+.sb-slot-vol {
+    width: 100%;
+    margin-top: 6px;
+}
+
+.sb-slot-vol input[type="range"] {
+    width: 100%;
+}
+
+/* ─── Shared section cards (soundboard, mixer, mic) ─── */
+
+.section-card,
+.mixer-card,
+.mic-card {
+    background: var(--surface);
+    border-radius: var(--radius);
+    padding: 14px;
+    margin-bottom: 12px;
+    border: 1px solid var(--surface2);
+}
+
+.section-title,
+.card-title {
+    font-size: 13px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 10px;
+}
+
+/* ─── Recording section ─── */
+
+.recording-toggle {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.rec-channels {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.rec-channel {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--surface2);
+    padding: 8px 14px;
+    border-radius: var(--radius-sm);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.rec-channel.active {
+    background: var(--red);
+    color: white;
+    animation: rec-pulse 1.2s ease infinite;
+}
+
+@keyframes rec-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+}
+
+.rec-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-dim);
+}
+
+.rec-channel.active .rec-dot {
+    background: white;
+}
+
+/* ─── Clip capture ─── */
+
+.clip-waveform {
+    grid-column: 1 / -1;
+    height: 70px;
+    background: var(--surface2);
+    border-radius: var(--radius-sm);
+    position: relative;
+    overflow: hidden;
+    margin-bottom: 10px;
+}
+
+.clip-waveform canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+}
+
+.clip-trim-controls {
+    grid-column: 1 / -1;
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    margin-bottom: 10px;
+}
+
+.clip-trim-controls label {
+    font-size: 13px;
+    color: var(--text-dim);
+    white-space: nowrap;
+}
+
+/* ─── Output target ─── */
+
+.output-selector {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.output-btn {
+    background: var(--surface2);
+    border: 2px solid transparent;
+    color: var(--text);
+    padding: 8px 14px;
+    border-radius: var(--radius-sm);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.output-btn:hover {
+    background: var(--surface3);
+}
+
+.output-btn.active {
+    border-color: var(--accent);
+    background: var(--surface3);
+    color: var(--text-bright);
+}
+
+/* ─── Mixer ─── */
+
+.master-vu {
+    background: var(--surface);
+    border: 1px solid var(--surface2);
+    border-radius: var(--radius);
+    padding: 12px;
+    margin-bottom: 12px;
+}
+
+.master-vu-bars {
+    display: flex;
+    gap: 12px;
+    margin-top: 8px;
+}
+
+.master-vu-bar {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+}
+
+.master-vu-bar .vu-meter {
+    height: 8px;
+}
+
+.master-vu-bar label {
+    font-size: 11px;
+    color: var(--text-dim);
+}
+
+.mixer-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 10px;
+    margin-bottom: 12px;
+}
+
+.mixer-channel {
+    background: var(--surface);
+    border: 1px solid var(--surface2);
+    border-radius: var(--radius);
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.mixer-channel.master {
+    border-color: var(--accent);
+}
+
+.channel-name {
+    font-size: 13px;
+    font-weight: 700;
+    text-align: center;
+}
+
+.vu-meter {
+    height: 6px;
+    background: var(--surface3);
+    border-radius: 3px;
+    overflow: hidden;
+    position: relative;
+}
+
+.vu-fill {
+    height: 100%;
+    background: linear-gradient(to right, var(--green) 0%, var(--green) 70%, var(--yellow) 85%, var(--red) 100%);
+    width: 0%;
+    transition: width 0.05s linear;
+    border-radius: 3px;
+}
+
+.vu-fill.stream {
+    background: var(--accent);
+}
+
+.fader-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.fader-row label {
+    font-size: 12px;
+    color: var(--text-dim);
+    width: 36px;
+    flex-shrink: 0;
+}
+
+.mixer-btns {
+    display: flex;
+    gap: 6px;
+    justify-content: center;
+}
+
+.mix-btn {
+    background: var(--surface2);
+    border: 1px solid var(--surface3);
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 700;
+    padding: 6px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s;
+    min-width: 40px;
+    text-align: center;
+}
+
+.mix-btn:hover {
+    background: var(--surface3);
+}
+
+.mix-btn.active.mute {
+    background: var(--red);
+    color: white;
+}
+
+.mix-btn.active.solo {
+    background: var(--yellow);
+    color: var(--bg);
+}
+
+.mix-btn.active.stream {
+    background: var(--accent);
+    color: white;
+}
+
+/* ─── Mic tab (unified with mixer/soundboard style) ─── */
+
+.mic-section {
+    background: var(--surface);
+    border: 1px solid var(--surface2);
+    border-radius: var(--radius);
+    padding: 14px;
+    margin-bottom: 12px;
+}
+
+.mic-section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+}
+
+.mic-section-title {
+    font-size: 13px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+}
+
+.param-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 8px;
+}
+
+.param-label {
+    font-size: 13px;
+    color: var(--text-dim);
+    width: 90px;
+    flex-shrink: 0;
+}
+
+.param-value {
+    font-size: 13px;
+    color: var(--text);
+    font-weight: 600;
+    width: 50px;
+    text-align: right;
+    flex-shrink: 0;
+}
+
+select {
+    background: var(--surface2);
+    color: var(--text);
+    border: 1px solid var(--surface3);
+    padding: 8px 12px;
+    border-radius: var(--radius-sm);
+    font-size: 14px;
+    cursor: pointer;
+}
+
+select:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+/* ─── EQ bands ─── */
+
+.eq-bands {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+}
+
+.eq-band {
+    background: var(--surface2);
+    border-radius: var(--radius-sm);
+    padding: 8px;
+    text-align: center;
+}
+
+.eq-band-freq {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-bottom: 4px;
+}
+
+.eq-band input[type="range"] {
+    height: 70px;
+    writing-mode: vertical-lr;
+    -webkit-appearance: slider-vertical;
+    appearance: slider-vertical;
+    width: 36px;
+    margin: 0 auto;
+}
+
+.eq-band-gain {
+    font-size: 12px;
+    color: var(--text);
+    margin-top: 4px;
+}
+
+/* ─── Sliders ─── */
+
+input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 32px;
+    background: transparent;
+    cursor: pointer;
+}
+
+input[type="range"]::-webkit-slider-runnable-track {
+    height: 6px;
+    background: var(--surface3);
+    border-radius: 3px;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--accent);
+    margin-top: -8px;
+    box-shadow: 0 0 8px var(--accent-glow);
+    cursor: pointer;
+}
+
+input[type="range"]::-moz-range-track {
+    height: 6px;
+    background: var(--surface3);
+    border-radius: 3px;
+}
+
+input[type="range"]::-moz-range-thumb {
+    width: 22px;
+    height: 22px;
+    border: none;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 8px var(--accent-glow);
+    cursor: pointer;
+}
+
+/* ─── Toggle switches ─── */
+
+.toggle {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+}
+
+.toggle input[type="checkbox"] {
+    display: none;
+}
+
+.toggle-switch {
+    width: 44px;
+    height: 26px;
+    background: var(--surface3);
+    border-radius: 13px;
+    position: relative;
+    transition: background 0.2s;
+    flex-shrink: 0;
+}
+
+.toggle-switch::after {
+    content: '';
+    position: absolute;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: var(--text-dim);
+    top: 3px;
+    left: 3px;
+    transition: all 0.2s;
+}
+
+.toggle input:checked + .toggle-switch {
+    background: var(--accent);
+}
+
+.toggle input:checked + .toggle-switch::after {
+    background: white;
+    left: 21px;
+}
+
+.toggle-label {
+    font-size: 13px;
+    font-weight: 600;
+}
+
+/* ─── Buttons ─── */
+
+.btn {
+    background: var(--surface2);
+    border: none;
+    color: var(--text);
+    padding: 10px 16px;
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+    min-height: 40px;
+}
+
+.btn:hover {
+    background: var(--surface3);
+}
+
+.btn:active {
+    transform: scale(0.97);
+}
+
+.btn-primary {
+    background: var(--accent);
+    color: white;
+}
+
+.btn-primary:hover {
+    background: var(--accent2);
+}
+
+.btn-danger {
+    background: var(--red);
+    color: white;
+}
+
+.btn-success {
+    background: var(--green);
+    color: var(--bg);
+}
+
+.btn-row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+/* ─── Toast ─── */
+
+#toast {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--surface3);
+    color: var(--text);
+    padding: 10px 20px;
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    font-weight: 600;
+    box-shadow: var(--shadow);
+    z-index: 1000;
+    opacity: 0;
+    transition: opacity 0.3s;
+    pointer-events: none;
+    white-space: nowrap;
+}
+
+#toast.show {
+    opacity: 1;
+}
+
+#toast.error {
+    background: var(--red);
+    color: white;
+}
+
+/* ─── VR-specific: large touch targets ─── */
+
+@media (pointer: coarse) {
+    .tab-btn, .btn, .mix-btn, .output-btn, .page-btn {
+        min-height: 48px;
+    }
+
+    input[type="range"]::-webkit-slider-thumb {
+        width: 28px;
+        height: 28px;
+        margin-top: -11px;
+    }
+}
+/* ─── In-app modal dialog (no system popups) ─── */
+
+.modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.65);
+    backdrop-filter: blur(2px);
+    z-index: 1000;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+}
+
+.modal-overlay.show {
+    display: flex;
+}
+
+.modal-card {
+    background: var(--surface);
+    border: 1px solid var(--surface3);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    width: 100%;
+    max-width: 480px;
+    padding: 24px;
+}
+
+.modal-title {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text-bright);
+    margin-bottom: 12px;
+}
+
+.modal-body {
+    font-size: 15px;
+    color: var(--text-dim);
+    line-height: 1.5;
+    margin-bottom: 16px;
+    word-break: break-word;
+}
+
+.modal-body strong {
+    color: var(--text);
+}
+
+.modal-input {
+    display: none;
+    width: 100%;
+    box-sizing: border-box;
+    background: var(--surface2);
+    border: 1px solid var(--surface3);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-size: 16px;
+    padding: 12px 14px;
+    margin-bottom: 16px;
+}
+
+.modal-input.show {
+    display: block;
+}
+
+.modal-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.modal-actions {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+}

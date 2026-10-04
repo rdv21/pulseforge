@@ -1,0 +1,21 @@
+{
+    "name": "PulseForge",
+    "version": "1.0.0",
+    "type": "dashboard",
+    "source": "pulseforge",
+    "title": "PulseForge Audio Mixer",
+    "description": "Virtual audio mixer with soundboard, channel mixing, and mic processing.",
+    "dashboard": {
+        "name": "PulseForge",
+        "url": "http://localhost:8765",
+        "icon": "",
+        "width": 1280,
+        "height": 720
+    },
+    "dashboard_tab": {
+        "label": "PulseForge",
+        "image": "",
+        "url": "http://localhost:8765"
+    },
+    "icons": []
+}

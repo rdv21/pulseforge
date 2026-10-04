@@ -48,7 +48,7 @@ if _afx_marker not in os.environ:
             # Re-exec so the dynamic linker picks up LD_LIBRARY_PATH.
             # Preserve the original invocation (module mode or script mode).
             _argv = [sys.executable]
-            if sys.flags.warn_unicode:
+            if getattr(sys.flags, 'warn_unicode', 0):
                 _argv.append('-W')
             os.execv(sys.executable, _argv + sys.argv)
             break
@@ -68,6 +68,7 @@ from .backend.native_chain import NativeMicChain
 from .backend.vu_meter import get_poller
 from .backend.process_manager import get_manager
 from .backend.soundboard import SoundboardBackend
+from .backend.web_server import WebServer
 
 
 # ─── QML Bridge ────────────────────────────────────────────────────
@@ -89,6 +90,8 @@ class PulseForgeBridge(QObject):
     statusMessage = Signal(str, arguments=['message'])  # toast/status bar
     errorOccurred = Signal(str, arguments=['message'])  # error toast
     soundboardChanged = Signal(int, arguments=['page'])  # grid slots changed, reload page
+    mixerStateChanged = Signal(str, arguments=['channel'])  # mute/stream toggled
+    micStateChanged = Signal()  # mic mute/monitor/stream toggled
 
     def __init__(self):
         super().__init__()
@@ -810,6 +813,11 @@ class PulseForgeBridge(QObject):
         return result
 
     @Slot(result='QVariant')
+    def getConfig(self):
+        """Return current config dict for QML state sync."""
+        return self._config
+
+    @Slot(result='QVariant')
     def getApps(self):
         """Return list of {name, group, id, key, icon} for QML."""
         apps = app_router.list_all_apps()
@@ -907,6 +915,7 @@ class PulseForgeBridge(QObject):
                 if src == channel_monitor and sink == stream_sink:
                     pw.remove_loopback_ramped(idx, ramp_ms=100)
                     print(f"  Stream: removed {channel} → {stream_sink} (ramped)")
+        self.mixerStateChanged.emit(channel)
 
     # (moveApp removed — use moveAppToGroup instead)
 
@@ -926,6 +935,7 @@ class PulseForgeBridge(QObject):
             pw.set_mute(self._mic_processed_node, muted)
         self._config["mic"]["muted"] = muted
         config.save_config(self._config)
+        self.micStateChanged.emit()
 
     @Slot(bool)
     def setMicMonitor(self, enabled: bool):
@@ -944,6 +954,7 @@ class PulseForgeBridge(QObject):
             for idx, src, sink in pw.list_loopbacks():
                 if src == mic_source:
                     pw.remove_loopback_ramped(idx, ramp_ms=100)
+        self.micStateChanged.emit()
 
     @Slot(bool)
     def setMicStream(self, enabled: bool):
@@ -964,6 +975,7 @@ class PulseForgeBridge(QObject):
                 if src == mic_source and sink == stream_sink:
                     pw.remove_loopback_ramped(idx, ramp_ms=100)
                     print(f"  Mic stream: removed {mic_source} → {stream_sink}")
+        self.micStateChanged.emit()
 
     @Slot(float)
     def setGateThreshold(self, threshold_db: float):
@@ -1373,6 +1385,7 @@ class PulseForgeBridge(QObject):
                 except Exception:
                     pass
                 break
+        self.mixerStateChanged.emit(channel)
 
     # ─── Soundboard Slots ───
 
@@ -1535,20 +1548,42 @@ class PulseForgeBridge(QObject):
         """Discard the current clip."""
         self._soundboard.clear_clip()
 
-    @Slot(str, result=str)
-    def publishClip(self, custom_name: str):
+    @Slot(str, result='QVariant')
+    def resolvePublishName(self, custom_name: str):
+        """Return the resolved MP3 name + collision info before saving.
+
+        The UI calls this first so it can show an in-app dialog when the name
+        already exists, instead of silently overwriting the file.
+        """
+        return self._soundboard.resolve_publish_name(custom_name)
+
+    @Slot(str, bool, result=str)
+    def publishClip(self, custom_name: str, overwrite: bool = False):
         """Publish the current trimmed clip as MP3 to ~/Music/Soundboard REC/.
 
         Args:
             custom_name: User-specified filename (without extension), or empty for auto.
-        Returns the MP3 path on success, empty string on failure.
+            overwrite:   Replace an existing file of the same name. When False a
+                         collision is refused (use resolvePublishName first).
+        Returns the MP3 path on success, empty string on failure/conflict.
         """
-        path = self._soundboard.publish_clip(custom_name)
+        path = self._soundboard.publish_clip(custom_name, overwrite)
         if path:
             self.statusMessage.emit(f"Published: {Path(path).name}")
         else:
-            self.statusMessage.emit("Publish failed")
+            conflict = self._soundboard.get_last_conflict()
+            if conflict:
+                self.statusMessage.emit(
+                    f"'{conflict.get('name', '')}' already exists — choose another name"
+                )
+            else:
+                self.statusMessage.emit("Publish failed")
         return path or ""
+
+    @Slot(result='QVariant')
+    def getLastPublishConflict(self):
+        """Info about the most recent blocked save ({name, suggestion, dir})."""
+        return self._soundboard.get_last_conflict()
 
     @Slot(result='QVariant')
     def getLastPublished(self):
@@ -1575,7 +1610,20 @@ class PulseForgeBridge(QObject):
         self._soundboard.cleanup()
 
 
+def _parse_web_port(argv):
+    """Extract --web-port from argv before QApplication strips it."""
+    for i, arg in enumerate(argv):
+        if arg == '--web-port' and i + 1 < len(argv):
+            return int(argv[i + 1])
+        if arg.startswith('--web-port='):
+            return int(arg.split('=', 1)[1])
+    return 8765
+
+
 def main():
+    # Parse --web-port BEFORE QApplication processes argv
+    web_port = _parse_web_port(sys.argv)
+
     # Use QApplication (not QGuiApplication) for system tray support
     app = QApplication(sys.argv)
     app.setApplicationName("pulseforge")
@@ -1703,7 +1751,12 @@ def main():
     # Start backend after QML is loaded
     bridge.start()
 
-    print("PulseForge running. Minimize to tray or right-click tray icon to quit.")
+    # Start web server alongside Qt UI
+    web_server = WebServer(bridge, port=web_port)
+    web_server.start()
+
+    print(f"PulseForge running. Web panel: http://localhost:{web_port}")
+    print("Minimize to tray or right-click tray icon to quit.")
 
     # Ensure cleanup on any exit path
     import signal
@@ -1713,6 +1766,10 @@ def main():
         if _cleanup_done[0]:
             return
         _cleanup_done[0] = True
+        try:
+            web_server.stop()
+        except Exception:
+            pass
         try:
             bridge.stop()
         except Exception:

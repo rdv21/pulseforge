@@ -42,6 +42,12 @@ Window {
     property bool assignMode: false  // after publish, next slot click assigns
     property string publishedName: ""
 
+    // In-app name-collision dialog state
+    property bool showCollisionDialog: false
+    property string collisionName: ""
+    property string collisionSuggestionStem: ""
+    property string _pendingPublishName: ""
+
     Component.onCompleted: {
         loadSoundboard()
         if (typeof PulseForge !== "undefined") {
@@ -60,6 +66,39 @@ Window {
         var targets = ["pulseforge_gaming", "pulseforge_game", "pulseforge_chat",
                        "pulseforge_media", "pulseforge_aux", "pulseforge_stream"]
         return targets[idx] || "pulseforge_gaming"
+    }
+
+    // ─── Publish with in-app collision handling ───
+    function attemptPublish(name) {
+        if (typeof PulseForge === "undefined") return
+        var info = PulseForge.resolvePublishName(name || "")
+        if (!info.available) return
+        if (info.exists) {
+            // Don't clobber — ask in-app what to do
+            _pendingPublishName = info.stem
+            collisionName = info.name
+            collisionSuggestionStem = info.suggestion_stem
+            showCollisionDialog = true
+        } else {
+            doPublish(name || "", false)
+        }
+    }
+
+    function doPublish(name, overwrite) {
+        var path = PulseForge.publishClip(name, overwrite)
+        if (path && path.length > 0) {
+            var info = PulseForge.getLastPublished()
+            publishedName = info.name
+            assignMode = true
+            editorMode = false
+            clipNameInput.text = ""
+        }
+    }
+
+    function resolveCollision(overwrite) {
+        var name = overwrite ? _pendingPublishName : collisionNameInput.text
+        showCollisionDialog = false
+        doPublish(name, overwrite)
     }
 
     // Listen for soundboard changes from backend
@@ -1067,14 +1106,7 @@ Window {
                                 implicitWidth: 70
                             }
                             onClicked: {
-                                var path = PulseForge.publishClip(clipNameInput.text)
-                                if (path && path.length > 0) {
-                                    var info = PulseForge.getLastPublished()
-                                    publishedName = info.name
-                                    assignMode = true
-                                    editorMode = false
-                                    clipNameInput.text = ""
-                                }
+                                sbWindow.attemptPublish(clipNameInput.text)
                             }
                         }
 
@@ -1114,6 +1146,143 @@ Window {
                         font.pixelSize: 8
                         color: sbWindow.textDim
                         Layout.alignment: Qt.AlignHCenter
+                    }
+                }
+            }
+        }
+    }
+
+    // ─── In-app name-collision dialog (no system popups) ───
+    Rectangle {
+        id: collisionOverlay
+        anchors.fill: parent
+        color: "#cc000000"
+        visible: sbWindow.showCollisionDialog
+        z: 1000
+
+        MouseArea { anchors.fill: parent }  // block interaction with the window behind
+
+        Rectangle {
+            width: Math.min(420, collisionOverlay.width - 40)
+            height: collisionColumn.implicitHeight + 36
+            anchors.centerIn: parent
+            radius: 10
+            color: sbWindow.bgCard
+            border.color: sbWindow.publishGold
+            border.width: 1
+
+            ColumnLayout {
+                id: collisionColumn
+                anchors.fill: parent
+                anchors.margins: 18
+                spacing: 10
+
+                Text {
+                    text: "★ Name already exists"
+                    font.pixelSize: 14
+                    font.bold: true
+                    color: sbWindow.publishGold
+                    Layout.fillWidth: true
+                }
+                Text {
+                    text: "\"" + sbWindow.collisionName + "\" already exists in the soundboard folder."
+                    font.pixelSize: 11
+                    color: sbWindow.textColor
+                    wrapMode: Text.WordWrap
+                    Layout.fillWidth: true
+                }
+                Text {
+                    text: "Save under a different name, or overwrite the existing file:"
+                    font.pixelSize: 10
+                    color: sbWindow.textDim
+                    wrapMode: Text.WordWrap
+                    Layout.fillWidth: true
+                }
+                TextField {
+                    id: collisionNameInput
+                    text: sbWindow.collisionSuggestionStem
+                    font.pixelSize: 11
+                    color: sbWindow.textColor
+                    Layout.fillWidth: true
+                    height: 30
+                    verticalAlignment: TextInput.AlignVCenter
+                    selectByMouse: true
+                    background: Rectangle {
+                        color: sbWindow.bgDark
+                        border.color: collisionNameInput.activeFocus ? sbWindow.publishGold : sbWindow.borderColor
+                        border.width: 1
+                        radius: 5
+                    }
+                    Keys.onReturnPressed: collisionSaveBtn.clicked()
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+                    Item { Layout.fillWidth: true }
+                    Button {
+                        text: "Cancel"
+                        height: 30
+                        contentItem: Text {
+                            text: parent.text
+                            font.pixelSize: 11
+                            color: sbWindow.textColor
+                            anchors.fill: parent
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                        background: Rectangle {
+                            color: sbWindow.bgDark
+                            border.color: sbWindow.borderColor
+                            border.width: 1
+                            radius: 5
+                            implicitHeight: 30
+                            implicitWidth: 70
+                        }
+                        onClicked: sbWindow.showCollisionDialog = false
+                    }
+                    Button {
+                        text: "Overwrite"
+                        height: 30
+                        contentItem: Text {
+                            text: parent.text
+                            font.pixelSize: 11
+                            color: "#e08080"
+                            anchors.fill: parent
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                        background: Rectangle {
+                            color: "#1a1010"
+                            border.color: "#7a3030"
+                            border.width: 1
+                            radius: 5
+                            implicitHeight: 30
+                            implicitWidth: 80
+                        }
+                        onClicked: sbWindow.resolveCollision(true)
+                    }
+                    Button {
+                        id: collisionSaveBtn
+                        text: "Save as new"
+                        height: 30
+                        contentItem: Text {
+                            text: parent.text
+                            font.pixelSize: 11
+                            font.bold: true
+                            color: sbWindow.publishGold
+                            anchors.fill: parent
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                        background: Rectangle {
+                            color: "#1a1a10"
+                            border.color: sbWindow.publishGold
+                            border.width: 1
+                            radius: 5
+                            implicitHeight: 30
+                            implicitWidth: 90
+                        }
+                        onClicked: sbWindow.resolveCollision(false)
                     }
                 }
             }

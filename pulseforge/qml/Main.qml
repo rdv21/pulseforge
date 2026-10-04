@@ -101,6 +101,34 @@ ApplicationWindow {
             }
         }
 
+        function onMixerStateChanged(channel) {
+            // Sync mute/stream state from config after web API change
+            var cfg = PulseForge.getConfig ? PulseForge.getConfig() : {}
+            var groups = cfg.groups || {}
+            var chState = groups[channel] || {}
+            for (var i = 0; i < channelRepeater.count; i++) {
+                var item = channelRepeater.itemAt(i)
+                if (item) {
+                    var itemName = item.name ? item.name.toLowerCase() : ""
+                    if (itemName === channel || item.channelName === channel) {
+                        item.muteChecked = !!chState.mute
+                        item.streamChecked = !!chState.stream_enabled
+                        break
+                    }
+                }
+            }
+        }
+
+        function onMicStateChanged() {
+            // Sync mic mute/monitor/stream state from config
+            var cfg = PulseForge.getConfig ? PulseForge.getConfig() : {}
+            var mic = cfg.mic || {}
+            if (micStrip) {
+                micStrip.muteChecked = !!mic.muted
+                micStrip.streamChecked = !!mic.stream_enabled
+            }
+        }
+
         function onStatusMessage(message) {
             statusBar.show(message, false)
         }

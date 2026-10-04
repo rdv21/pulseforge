@@ -204,6 +204,7 @@ class ProcessManager:
         """
         patterns = [
             ("pw-cat.*pulseforge", "pw-cat"),
+            ("pw-play.*pulseforge", "pw-play"),
             ("pipewire -c filter-chain", "filter-chain"),
         ]
 

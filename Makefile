@@ -19,6 +19,7 @@ install:
 	install -d $(DESTDIR)$(PYTHON_SITE)/pulseforge/backend
 	install -d $(DESTDIR)$(PYTHON_SITE)/pulseforge/qml
 	install -d $(DESTDIR)$(PYTHON_SITE)/pulseforge/qml/components
+	install -d $(DESTDIR)$(PYTHON_SITE)/pulseforge/web
 	install -m644 $(PKG_DIR)/__init__.py $(DESTDIR)$(PYTHON_SITE)/pulseforge/
 	install -m644 $(PKG_DIR)/main.py $(DESTDIR)$(PYTHON_SITE)/pulseforge/
 	install -m644 $(PKG_DIR)/Icon.png $(DESTDIR)$(PYTHON_SITE)/pulseforge/
@@ -28,6 +29,7 @@ install:
 	install -m644 $(QML_CMP)/*.qml $(DESTDIR)$(PYTHON_SITE)/pulseforge/qml/components/
 	install -m644 $(QML_DIR)/__init__.py $(DESTDIR)$(PYTHON_SITE)/pulseforge/qml/
 	install -m644 $(QML_CMP)/__init__.py $(DESTDIR)$(PYTHON_SITE)/pulseforge/qml/components/
+	install -m644 $(PKG_DIR)/web/* $(DESTDIR)$(PYTHON_SITE)/pulseforge/web/
 	install -m644 $(PKG_DIR)/launch.py $(DESTDIR)$(PYTHON_SITE)/pulseforge/
 
 	# Install executable wrapper

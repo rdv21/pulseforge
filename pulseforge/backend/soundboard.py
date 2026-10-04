@@ -296,6 +296,9 @@ class SoundboardBackend:
         self._last_published_path: str = ""
         self._last_published_name: str = ""
 
+        # Last name conflict (so the UI can explain why a save was blocked)
+        self._last_publish_conflict: dict = {}
+
         # Recording enabled (persisted, starts with this state)
         self.recording_enabled: bool = True
 
@@ -372,11 +375,26 @@ class SoundboardBackend:
             return ["pulseforge_gaming", "pulseforge_stream"]
         return [self.output_target]
 
+    def _reap(self):
+        """Reap exited pw-play children so they don't linger as zombies.
+
+        Popen.poll() calls waitpid(WNOHANG), which reaps the child. Without
+        this, a sound that finishes on its own leaves a defunct process behind.
+        """
+        for page in self.pages:
+            for slot in page:
+                if slot._procs:
+                    slot._procs = [p for p in slot._procs if p.poll() is None]
+        clip_procs = getattr(self, "_clip_procs", None)
+        if clip_procs:
+            self._clip_procs = [p for p in clip_procs if p.poll() is None]
+
     def play_sound(self, page: int, index: int):
         """Play the sound assigned to a slot, routed to the output target(s)."""
         slot = self.get_slot(page, index)
         if not slot or not slot.is_assigned:
             return
+        self._reap()
         self.stop_playback(page, index)
         for target in self._get_playback_targets():
             try:
@@ -406,6 +424,7 @@ class SoundboardBackend:
             slot._procs.clear()
 
     def is_playing(self, page: int, index: int) -> bool:
+        self._reap()
         slot = self.get_slot(page, index)
         if slot and slot._procs:
             return any(p.poll() is None for p in slot._procs)
@@ -580,13 +599,91 @@ class SoundboardBackend:
 
     # ─── Publish to MP3 ───
 
-    def publish_clip(self, custom_name: str = "") -> Optional[str]:
+    @staticmethod
+    def _sanitize_name(name: str) -> str:
+        """Make a user-supplied name filesystem-safe (no extension handling)."""
+        safe = "".join(c for c in name if c not in "/\\:*?\"<>|").strip()
+        return safe or "clip"
+
+    @staticmethod
+    def _auto_base_name(clip: "AudioClip") -> str:
+        """Default name when the user leaves the name field empty."""
+        timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
+        return f"{clip.channel or 'clip'}_{timestamp}"
+
+    def _unique_name(self, base: str, ext: str = "mp3") -> str:
+        """Return a non-colliding filename stem: 'name', 'name (1)', 'name (2)'..."""
+        if not (PUBLISH_DIR / f"{base}.{ext}").exists():
+            return base
+        i = 1
+        while (PUBLISH_DIR / f"{base} ({i}).{ext}").exists():
+            i += 1
+        return f"{base} ({i})"
+
+    def resolve_publish_name(self, custom_name: str = "") -> dict:
+        """Resolve the final MP3 filename without writing anything.
+
+        Lets the UI check for collisions *before* saving so it can offer an
+        in-app rename / overwrite dialog instead of silently replacing a file.
+        """
+        clip = self.get_current_clip()
+        if clip is None:
+            return {
+                "available": False, "name": "", "stem": "", "exists": False,
+                "suggestion": "", "suggestion_stem": "", "dir": str(PUBLISH_DIR),
+            }
+        if custom_name and custom_name.strip():
+            base = self._sanitize_name(custom_name)
+        else:
+            base = self._auto_base_name(clip)
+        name = f"{base}.mp3"
+        exists = (PUBLISH_DIR / name).exists()
+        suggestion_stem = self._unique_name(base, "mp3") if exists else base
+        return {
+            "available": True,
+            "name": name,
+            "stem": base,
+            "exists": exists,
+            "suggestion": f"{suggestion_stem}.mp3",
+            "suggestion_stem": suggestion_stem,
+            "dir": str(PUBLISH_DIR),
+        }
+
+    def _encode_clip_mp3(self, clip: "AudioClip", mp3_path: Path) -> bool:
+        """Render the trimmed clip to an MP3 file at mp3_path. Returns success."""
+        tmp_wav = str(self._config_dir / "_publish.wav")
+        if not self._export_clip_wav(clip, tmp_wav):
+            return False
+        try:
+            cmd = [
+                "ffmpeg", "-y", "-i", tmp_wav,
+                "-codec:a", "libmp3lame", "-b:a", "192k",
+                str(mp3_path)
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            if result.returncode != 0:
+                print(f"  Soundboard: ffmpeg error: {result.stderr[:200]}")
+                return False
+        except Exception as e:
+            print(f"  Soundboard: MP3 publish error: {e}")
+            return False
+        finally:
+            try:
+                os.unlink(tmp_wav)
+            except Exception:
+                pass
+        return True
+
+    def publish_clip(self, custom_name: str = "", overwrite: bool = False) -> Optional[str]:
         """Export the current trimmed clip as MP3 to ~/Music/Soundboard REC/.
 
         Args:
             custom_name: User-specified filename (without extension). If empty,
                         uses channel_YYYY-MM-DD_HH-MM-SS.mp3.
-        Returns the path to the MP3 file, or None on failure.
+            overwrite:   When False (default) a name collision aborts the save
+                        instead of replacing the existing file. Callers should
+                        first use resolve_publish_name() to detect collisions.
+        Returns the path to the MP3 file, or None on failure/conflict.
         The published clip is stored as _last_published for slot assignment.
         """
         clip = self.get_current_clip()
@@ -596,50 +693,31 @@ class SoundboardBackend:
         # Ensure publish directory exists
         PUBLISH_DIR.mkdir(parents=True, exist_ok=True)
 
-        # Generate filename
-        if custom_name:
-            # Sanitize: remove path separators, trim, keep it filesystem-safe
-            safe_name = "".join(c for c in custom_name if c not in "/\\:*?\"<>|").strip()
-            safe_name = safe_name or "clip"
-            mp3_name = f"{safe_name}.mp3"
-        else:
-            timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
-            channel = clip.channel or "clip"
-            mp3_name = f"{channel}_{timestamp}.mp3"
+        info = self.resolve_publish_name(custom_name)
+        if not info["available"]:
+            return None
+        mp3_name = info["name"]
         mp3_path = PUBLISH_DIR / mp3_name
 
-        # Export trimmed clip to temp WAV first
-        tmp_wav = str(self._config_dir / "_publish.wav")
-        if not self._export_clip_wav(clip, tmp_wav):
+        # Refuse to clobber unless the caller explicitly asked to overwrite.
+        if mp3_path.exists() and not overwrite:
+            self._last_publish_conflict = dict(info)
+            print(f"  Soundboard: publish blocked — '{mp3_name}' already exists "
+                  f"(suggest '{info['suggestion']}')")
             return None
 
-        # Convert to MP3 with ffmpeg
-        try:
-            cmd = [
-                "ffmpeg", "-y", "-i", tmp_wav,
-                "-codec:a", "libmp3lame", "-b:a", "192k",
-                str(mp3_path)
-            ]
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=10
-            )
-            if result.returncode != 0:
-                print(f"  Soundboard: ffmpeg error: {result.stderr[:200]}")
-                return None
-        except Exception as e:
-            print(f"  Soundboard: MP3 publish error: {e}")
+        if not self._encode_clip_mp3(clip, mp3_path):
             return None
 
-        # Clean up temp WAV
-        try:
-            os.unlink(tmp_wav)
-        except Exception:
-            pass
-
+        self._last_publish_conflict = {}
         self._last_published_path = str(mp3_path)
         self._last_published_name = Path(mp3_path).stem
         print(f"  Soundboard: published {mp3_path}")
         return str(mp3_path)
+
+    def get_last_conflict(self) -> dict:
+        """Return the most recent blocked-save info ({"name":..., "suggestion":...})."""
+        return dict(self._last_publish_conflict)
 
     def get_last_published(self) -> dict:
         """Return info about the last published clip for slot assignment."""
@@ -697,3 +775,11 @@ class SoundboardBackend:
                 self.stop_playback(page, i)
         self.stop_clip_preview()
         self.stop_all_recording()
+        # Remove transient scratch WAVs so they don't litter the config dir
+        for scratch in ("_preview.wav", "_publish.wav"):
+            try:
+                (self._config_dir / scratch).unlink()
+            except FileNotFoundError:
+                pass
+            except Exception:
+                pass

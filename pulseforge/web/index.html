@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#0d0d12">
+    <title>PulseForge</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ─── Header ─── -->
+<div id="header">
+    <div id="logo">🔊 PulseForge</div>
+    <div id="tabs">
+        <button class="tab-btn active" data-tab="soundboard">Soundboard</button>
+        <button class="tab-btn" data-tab="mixer">Mixer</button>
+        <button class="tab-btn" data-tab="mic">Mic</button>
+    </div>
+    <div id="status-dot"></div>
+</div>
+
+<!-- ─── Content ─── -->
+<div id="content">
+
+    <!-- ═══ Tab: Soundboard ═══ -->
+    <div id="tab-soundboard" class="tab-panel active">
+
+        <!-- Pages -->
+        <div id="soundboard-pages">
+            <button class="page-btn active" data-page="0">Page 1</button>
+            <button class="page-btn" data-page="1">Page 2</button>
+            <button class="page-btn" data-page="2">Page 3</button>
+        </div>
+
+        <!-- 3×3 Grid -->
+        <div id="soundboard-grid"></div>
+
+        <!-- Output target -->
+        <div class="section-card">
+            <div class="section-title">Output Target</div>
+            <div class="output-selector" id="sb-output-selector">
+                <button class="output-btn active" data-target="pulseforge_gaming">Main + Stream</button>
+                <button class="output-btn" data-target="pulseforge_game">Game</button>
+                <button class="output-btn" data-target="pulseforge_chat">Chat</button>
+                <button class="output-btn" data-target="pulseforge_media">Media</button>
+                <button class="output-btn" data-target="pulseforge_aux">Aux</button>
+                <button class="output-btn" data-target="pulseforge_stream">Stream Only</button>
+            </div>
+        </div>
+
+        <!-- Recording -->
+        <div class="section-card">
+            <div class="section-title">Recording</div>
+            <div class="recording-toggle">
+                <label class="toggle">
+                    <input type="checkbox" id="rec-enabled" checked>
+                    <span class="toggle-switch"></span>
+                    <span class="toggle-label">Recording Enabled</span>
+                </label>
+            </div>
+            <div class="rec-channels" id="rec-channels">
+                <div class="rec-channel" data-channel="game">
+                    <div class="rec-dot"></div>
+                    <span>Game</span>
+                </div>
+                <div class="rec-channel" data-channel="chat">
+                    <div class="rec-dot"></div>
+                    <span>Chat</span>
+                </div>
+                <div class="rec-channel" data-channel="media">
+                    <div class="rec-dot"></div>
+                    <span>Media</span>
+                </div>
+                <div class="rec-channel" data-channel="aux">
+                    <div class="rec-dot"></div>
+                    <span>Aux</span>
+                </div>
+                <div class="rec-channel" data-channel="mic">
+                    <div class="rec-dot"></div>
+                    <span>Mic</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Clip capture -->
+        <div class="section-card">
+            <div class="section-title">Clip Capture</div>
+            <div class="btn-row" style="margin-bottom: 10px;">
+                <button class="btn" id="btn-capture-game">⏺ Game</button>
+                <button class="btn" id="btn-capture-chat">⏺ Chat</button>
+                <button class="btn" id="btn-capture-media">⏺ Media</button>
+                <button class="btn" id="btn-capture-aux">⏺ Aux</button>
+                <button class="btn" id="btn-capture-mic">⏺ Mic</button>
+            </div>
+            <div class="clip-waveform">
+                <canvas id="clip-canvas"></canvas>
+            </div>
+            <div class="clip-trim-controls">
+                <label>Start:</label>
+                <input type="range" id="clip-trim-start" min="0" max="15" step="0.1" value="0">
+                <label>End:</label>
+                <input type="range" id="clip-trim-end" min="0" max="15" step="0.1" value="15">
+            </div>
+            <div class="btn-row">
+                <button class="btn btn-primary" id="btn-clip-play">▶ Preview</button>
+                <button class="btn" id="btn-clip-stop">⏹ Stop</button>
+                <input type="text" id="clip-name" placeholder="Clip name" style="flex:1; min-width: 100px;">
+                <button class="btn btn-success" id="btn-clip-publish">Publish</button>
+                <button class="btn btn-primary" id="btn-clip-assign1">Assign</button>
+                <button class="btn" id="btn-clip-clear">Clear</button>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- ═══ Tab: Mixer ═══ -->
+    <div id="tab-mixer" class="tab-panel">
+
+        <!-- Master VU -->
+        <div class="master-vu">
+            <div class="section-title">Master VU</div>
+            <div class="master-vu-bars">
+                <div class="master-vu-bar">
+                    <div class="vu-meter"><div class="vu-fill" id="vu-master-main"></div></div>
+                    <label>Main Mix</label>
+                </div>
+                <div class="master-vu-bar">
+                    <div class="vu-meter"><div class="vu-fill stream" id="vu-master-stream"></div></div>
+                    <label>Stream Mix</label>
+                </div>
+            </div>
+        </div>
+
+        <!-- Channels -->
+        <div class="mixer-grid" id="mixer-grid"></div>
+
+    </div>
+
+    <!-- ═══ Tab: Mic ═══ -->
+    <div id="tab-mic" class="tab-panel">
+
+        <!-- Microphone -->
+        <div class="mic-section">
+            <div class="mic-section-header">
+                <div class="mic-section-title">Microphone</div>
+            </div>
+            <div class="param-row">
+                <span class="param-label">Volume</span>
+                <input type="range" id="mic-volume" min="0" max="100" value="100">
+                <span class="param-value" id="mic-volume-val">100%</span>
+            </div>
+            <div class="param-row">
+                <label class="toggle"><input type="checkbox" id="mic-mute"><span class="toggle-switch"></span><span class="toggle-label">Mute</span></label>
+            </div>
+            <div class="param-row">
+                <label class="toggle"><input type="checkbox" id="mic-monitor"><span class="toggle-switch"></span><span class="toggle-label">Monitor (hear yourself)</span></label>
+            </div>
+            <div class="param-row">
+                <label class="toggle"><input type="checkbox" id="mic-stream"><span class="toggle-switch"></span><span class="toggle-label">Stream to viewers</span></label>
+            </div>
+            <div class="param-row">
+                <div class="vu-meter" style="flex: 1;">
+                    <div class="vu-fill" id="vu-mic"></div>
+                </div>
+                <span class="param-label" style="width: auto;">Mic VU</span>
+            </div>
+        </div>
+
+        <!-- AFX -->
+        <div class="mic-section">
+            <div class="mic-section-header">
+                <div class="mic-section-title">AFX (NVIDIA Audio Effects)</div>
+                <label class="toggle"><input type="checkbox" id="afx-enabled"><span class="toggle-switch"></span></label>
+            </div>
+            <div class="param-row">
+                <span class="param-label">Mode</span>
+                <select id="afx-mode" style="flex: 1;">
+                    <option value="denoiser">Denoiser</option>
+                    <option value="denoiser_v2">Denoiser V2</option>
+                    <option value="dereverb">De-reverb</option>
+                    <option value="dereverb_denoiser">De-reverb + Denoiser</option>
+                    <option value="studio_voice_low_latency">Studio Voice (Low Latency)</option>
+                </select>
+            </div>
+            <div class="param-row">
+                <span class="param-label">Intensity</span>
+                <input type="range" id="afx-intensity" min="0" max="100" value="70">
+                <span class="param-value" id="afx-intensity-val">70%</span>
+            </div>
+        </div>
+
+        <!-- Gate -->
+        <div class="mic-section">
+            <div class="mic-section-header">
+                <div class="mic-section-title">Noise Gate</div>
+                <label class="toggle"><input type="checkbox" id="gate-enabled"><span class="toggle-switch"></span></label>
+            </div>
+            <div class="param-row">
+                <span class="param-label">Threshold</span>
+                <input type="range" id="gate-threshold" min="-80" max="0" step="1" value="-50">
+                <span class="param-value" id="gate-threshold-val">-50 dB</span>
+            </div>
+            <div class="param-row">
+                <span class="param-label">Range</span>
+                <input type="range" id="gate-range" min="-80" max="0" step="1" value="-25">
+                <span class="param-value" id="gate-range-val">-25 dB</span>
+            </div>
+            <div class="param-row">
+                <span class="param-label">Attack</span>
+                <input type="range" id="gate-attack" min="1" max="500" step="1" value="25">
+                <span class="param-value" id="gate-attack-val">25 ms</span>
+            </div>
+            <div class="param-row">
+                <span class="param-label">Hold</span>
+                <input type="range" id="gate-hold" min="0" max="2000" step="10" value="300">
+                <span class="param-value" id="gate-hold-val">300 ms</span>
+            </div>
+            <div class="param-row">
+                <span class="param-label">Release</span>
+                <input type="range" id="gate-release" min="10" max="2000" step="10" value="200">
+                <span class="param-value" id="gate-release-val">200 ms</span>
+            </div>
+        </div>
+
+        <!-- Compressor -->
+        <div class="mic-section">
+            <div class="mic-section-header">
+                <div class="mic-section-title">Compressor</div>
+                <label class="toggle"><input type="checkbox" id="comp-enabled"><span class="toggle-switch"></span></label>
+            </div>
+            <div class="param-row">
+                <span class="param-label">Threshold</span>
+                <input type="range" id="comp-threshold" min="-60" max="0" step="1" value="-20">
+                <span class="param-value" id="comp-threshold-val">-20 dB</span>
+            </div>
+            <div class="param-row">
+                <span class="param-label">Ratio</span>
+                <input type="range" id="comp-ratio" min="1" max="20" step="0.5" value="3">
+                <span class="param-value" id="comp-ratio-val">3:1</span>
+            </div>
+            <div class="param-row">
+                <span class="param-label">Makeup</span>
+                <input type="range" id="comp-makeup" min="0" max="24" step="0.5" value="0">
+                <span class="param-value" id="comp-makeup-val">0 dB</span>
+            </div>
+        </div>
+
+        <!-- EQ -->
+        <div class="mic-section">
+            <div class="mic-section-header">
+                <div class="mic-section-title">Equalizer (8-band)</div>
+                <label class="toggle"><input type="checkbox" id="eq-enabled"><span class="toggle-switch"></span></label>
+            </div>
+            <div class="eq-bands" id="eq-bands-grid"></div>
+        </div>
+
+    </div>
+
+</div>
+
+<!-- ─── Modal (in-app dialog, no system popups) ─── -->
+<div id="modal-overlay" class="modal-overlay">
+    <div class="modal-card">
+        <div class="modal-title" id="modal-title"></div>
+        <div class="modal-body" id="modal-body"></div>
+        <input type="text" id="modal-input" class="modal-input" />
+        <div class="modal-actions" id="modal-actions"></div>
+    </div>
+</div>
+
+<!-- ─── Toast ─── -->
+<div id="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

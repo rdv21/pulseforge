@@ -24,11 +24,17 @@ Most Linux audio tools are built for audio engineers. PulseForge is built for pe
 
 Studio-grade mic chain running in real-time, all parameters adjustable with zero latency:
 
-- **Noise cancellation** — speexdsp-powered suppression with continuous intensity control (no robotic artifacts)
-- **NVIDIA AFX** — optional AI-powered noise removal on RTX GPUs (denoiser, dereverb, studio voice). Automatically detected at runtime; falls back to speexdsp on non-RTX systems
+- **NVIDIA AFX** — AI-powered noise removal on RTX GPUs (denoiser, dereverb, studio voice). Automatically detected at runtime; the only noise processor (AFX is required for noise removal)
 - **Noise gate** — RMS-based detection with smooth attack/release, adjustable range floor
 - **8-band parametric EQ** — visual draggable curve, real-time FFT spectrum overlay, save/load presets
 - **Compressor** — feed-forward design with transparent defaults for clean voice
+
+### 🎛️ Web Control Panel
+
+- **Browser/VR control panel** served on `http://localhost:8765` while PulseForge runs
+- Full mixer, mic, and soundboard control from any device on your network
+- Real-time VU meters pushed over WebSocket — no page reloads
+- Self-contained (Python stdlib + plain ES6), no build step
 
 ### 🔊 Stream Routing
 
@@ -41,7 +47,7 @@ Studio-grade mic chain running in real-time, all parameters adjustable with zero
 
 ## Screenshots
 
-> _Screenshots coming soon — the UI is a dark-themed QML mixer with channel strips, an app routing grid, and a dedicated mic settings window with a visual EQ._
+> _The UI is a dark-themed QML mixer with channel strips, an app routing grid, a dedicated mic settings window with a visual EQ, and a soundboard with capture/clip editing._
 
 ---
 
@@ -56,24 +62,24 @@ Studio-grade mic chain running in real-time, all parameters adjustable with zero
 | **Python 3.11+** | Runtime | `python3 --version` to check |
 | **PySide6 (Qt 6)** | UI framework | `pip install PySide6` |
 | **numpy** | DSP math | `pip install numpy` |
-| **speexdsp** | Noise suppression | See below |
-| **rnnoise** | Legacy noise fallback | Optional |
+| **ffmpeg** | Soundboard MP3 publish | `sudo pacman -S ffmpeg` / `sudo apt install ffmpeg` |
+| **NVIDIA AFX SDK** | AI noise removal (RTX only, optional) | See below |
 
 ### Install system libraries
 
 **Arch / CachyOS / Manjaro:**
 ```bash
-sudo pacman -S pipewire wireplumber speexdsp rnnoise
+sudo pacman -S pipewire wireplumber ffmpeg
 ```
 
 **Fedora:**
 ```bash
-sudo dnf install pipewire wireplumber speexdsp rnnoise
+sudo dnf install pipewire wireplumber ffmpeg
 ```
 
 **Ubuntu / Debian (24.04+):**
 ```bash
-sudo apt install pipewire wireplumber libspeexdsp1 librnnoise0
+sudo apt install pipewire wireplumber ffmpeg
 ```
 
 ### Install PulseForge
@@ -81,7 +87,7 @@ sudo apt install pipewire wireplumber libspeexdsp1 librnnoise0
 #### Option A: From source (recommended for now)
 
 ```bash
-git clone https://github.com/aielia/pulseforge.git
+git clone https://github.com/rdv21/pulseforge.git
 cd pulseforge
 pip install .
 ```
@@ -94,7 +100,7 @@ pulseforge
 #### Option B: Run without installing
 
 ```bash
-git clone https://github.com/aielia/pulseforge.git
+git clone https://github.com/rdv21/pulseforge.git
 cd pulseforge
 ./pulseforge.sh
 ```
@@ -102,7 +108,7 @@ cd pulseforge
 #### Option C: System-wide install with .desktop entry
 
 ```bash
-git clone https://github.com/aielia/pulseforge.git
+git clone https://github.com/rdv21/pulseforge.git
 cd pulseforge
 sudo make install
 ```
@@ -133,9 +139,11 @@ PulseForge creates virtual PipeWire sinks for each channel (Game, Chat, Media, A
 
 For streaming, a separate virtual stream sink collects audio from any channels you enable, and a virtual source makes it available as a microphone input to OBS, Discord, etc.
 
-The mic chain captures audio from your hardware mic via `pw-cat`, processes it through a Python DSP pipeline (noise suppression → gate → EQ → compressor), and publishes it as a virtual source that apps can capture.
+The mic chain captures audio from your hardware mic via `pw-cat`, processes it through a Python DSP pipeline (AFX noise removal → gate → EQ → compressor), and publishes it as a virtual source that apps can capture.
 
 All processing happens in-process — no external PipeWire filter-chain processes to manage. Parameters update instantly when you move a slider.
+
+A small built-in HTTP server (Python stdlib, no dependencies) serves the web control panel on port 8765 alongside the Qt UI.
 
 ---
 
@@ -146,6 +154,7 @@ Settings are stored in `~/.config/pulseforge/`:
 - `config.json` — device selections, volumes, mic processing params
 - `app-routing.json` — app-to-channel assignments
 - `eq-presets/` — saved EQ presets as JSON
+- `soundboard/` — soundboard slot bindings (`soundboard.json`)
 
 ---
 
@@ -156,7 +165,8 @@ Settings are stored in `~/.config/pulseforge/`:
 - **Qt 6 with QML** (PySide6 ≥ 6.6)
 - **Python 3.11+**
 - **numpy ≥ 2.0**
-- **libspeexdsp** (noise suppression)
+- **ffmpeg** (soundboard MP3 publishing)
+- **NVIDIA AFX SDK** (RTX GPUs; required for noise removal)
 - KDE Plasma recommended (for system theme integration), but any Qt-compatible desktop works
 
 ---
