@@ -58,7 +58,29 @@ never a silent clobber
 
 ## Screenshots
 
-> _The UI is a dark-themed QML mixer with channel strips, an app routing grid, a dedicated mic settings window with a visual EQ, and a soundboard with capture/clip editing._
+### Mixer
+
+Channel strips with independent volume + stream faders, VU meters, and app routing.
+
+![PulseForge mixer](docs/images/mixer.jpg)
+
+### Mic processing
+
+AFX noise removal, noise gate, 8-band parametric EQ with live spectrum, and compressor.
+
+![Mic settings](docs/images/mic-settings.jpg)
+
+### Soundboard
+
+3 pages × 3×3 grid of assignable sound slots with always-on channel recording.
+
+![Soundboard](docs/images/soundboard.jpg)
+
+### Clip editor
+
+Capture from any channel, trim with draggable handles, preview, and publish to MP3.
+
+![Clip editor](docs/images/clip-editor.jpg)
 
 ---
 
