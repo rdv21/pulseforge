@@ -11,7 +11,8 @@
 - [x] Capture clip from ring buffer
 - [x] Waveform editor with draggable trim handles (start/end markers)
 - [x] Clip playback (preview trimmed audio via pw-play)
-- [x] Export trimmed clip to WAV
+- [x] Collision-safe publish — in-app rename/overwrite dialog instead of silent overwrite
+- [x] Web control panel (browser/VR) — soundboard, mixer, mic over HTTP+WebSocket
 - [x] Two-view layout (Grid ↔ Clip Editor toggle)
 
 ### Needs Testing
@@ -42,6 +43,10 @@
 ## Core PulseForge
 
 ### Needs Work
-- [ ] Update or remove stale system install (`/usr/lib/python3.14/site-packages/pulseforge/`)
+- [ ] Stale system install (`/usr/lib/python3.14/site-packages/pulseforge/`, `/usr/bin/pulseforge`,
+  system `.desktop` + icons) — **deferred: needs sudo**. Repo is now the source of truth, so this
+  is no longer on the runtime path; remove with `sudo make uninstall` when convenient.
 - [ ] Cleaner AFX "not available" messaging (currently prints error code 6)
 - [ ] Main.qml WindowStaysOnTopHint — make configurable
+- [ ] Old user install `~/.local/lib/python3.14/site-packages/pulseforge/` is now unused
+  (launcher imports the repo); remove once confirmed

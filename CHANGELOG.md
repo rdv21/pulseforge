@@ -5,6 +5,28 @@ All notable changes to PulseForge are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Web control panel** — browser/VR UI served on `http://localhost:8765` alongside the Qt app
+  (mixer, mic, and soundboard control; real-time VU over WebSocket; stdlib-only server)
+- **Collision-safe soundboard publishing** — publishing a clip whose name already exists no
+  longer overwrites it; an in-app dialog offers rename (auto-suggested `Name (1)`) or explicit overwrite
+
+### Fixed
+- Reap finished `pw-play` children so soundboard playback no longer accumulates zombie processes
+- Clean up transient `_preview.wav` / `_publish.wav` scratch files on shutdown
+- `pulseforge.sh` now runs the repository package (single source of truth) instead of
+  silently importing the installed copy from site-packages
+
+### Changed
+- Makefile and `pyproject.toml` now install/ship the `pulseforge.web` panel assets
+- README: corrected repo URL, dropped removed speex/rnnoise prerequisites, documented the
+  web panel and the AFX-only mic noise chain, added ffmpeg requirement
+
+### Removed
+- Legacy `pipewire/pulseforge.conf` (old Calf LV2 + RNNoise filter-chain architecture, unused)
+
 ## [1.2.0] - 2026-09-17
 
 ### Added
