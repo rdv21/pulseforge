@@ -43,6 +43,17 @@ Studio-grade mic chain running in real-time, all parameters adjustable with zero
 - Creates a virtual microphone that OBS, Discord, and other apps can capture directly
 - Your stream audio never touches your speakers — no echo loops
 
+### 🥁 Soundboard
+
+- **3 pages × 3×3 grid** of assignable sound slots — bind any audio file and trigger it live
+- **Always-on channel recording** — a 15 s ring buffer per channel (Game, Chat, Media, Aux, Mic)
+- **Live waveform** capture straight from any channel's monitoring tap
+- **Clip editor** — trim with draggable handles, preview, then publish
+- **Publish to MP3** (via ffmpeg) with **collision-safe naming** — if a name already
+exists you get an in-app dialog to rename (auto-suggested `Name (1)`) or overwrite,
+never a silent clobber
+- Sounds play to the main mix and the stream mix by default, so viewers hear them too
+
 ---
 
 ## Screenshots
@@ -123,7 +134,9 @@ This installs the app, desktop entry, and icon system-wide. Launch from your app
 2. **Open apps** — they'll appear in the app routing panel. Assign each to a channel (Game, Chat, Media, Aux) from the dropdown
 3. **Mix** — adjust volume faders for each channel. The master fader controls overall output
 4. **Stream** — click the STREAM button on any channel to send it to the stream mix. OBS and Discord will see "PulseForge Stream Input" as a microphone
-5. **Mic settings** — click the gear icon to open the mic processing window. Adjust noise suppression, gate, EQ, and compressor in real-time
+5. **Mic settings** — open the mic processing window to adjust AFX noise removal, gate, EQ, and compressor in real-time
+6. **Soundboard** — open the soundboard to bind sounds to the 3×3 grid, capture clips from any channel, trim, and publish
+7. **Web panel** — browse to `http://localhost:8765` (from this machine or another device) for the same controls in a browser or VR overlay
 
 ### Tips
 
@@ -160,7 +173,7 @@ Settings are stored in `~/.config/pulseforge/`:
 
 ## Requirements detail
 
-- **PipeWire 1.0+** (tested on 1.6.8)
+- **PipeWire 1.0+** (tested on 1.6.9)
 - **WirePlumber** (for session management)
 - **Qt 6 with QML** (PySide6 ≥ 6.6)
 - **Python 3.11+**
@@ -168,6 +181,30 @@ Settings are stored in `~/.config/pulseforge/`:
 - **ffmpeg** (soundboard MP3 publishing)
 - **NVIDIA AFX SDK** (RTX GPUs; required for noise removal)
 - KDE Plasma recommended (for system theme integration), but any Qt-compatible desktop works
+
+---
+
+## Project layout
+
+```
+pulseforge/
+├── backend/          # PipeWire control, DSP, mic chain, soundboard, web server
+│   ├── pipewire_ctl.py    # sinks, volumes, loopbacks, routing
+│   ├── native_chain.py    # mic chain: AFX → gate → EQ → compressor → pw-cat
+│   ├── dsp.py             # AFXNoise, Gate, EQ, Compressor processors
+│   ├── soundboard.py      # slots, per-channel recording, clip edit/publish
+│   ├── web_server.py      # stdlib HTTP + WebSocket control panel
+│   ├── vu_meter.py        # VU polling
+│   └── process_manager.py # pw-cat/pw-play lifecycle + orphan cleanup
+├── qml/              # Qt/QML UI
+│   ├── Main.qml           # mixer, routing, status bar
+│   ├── MicSettingsWindow.qml
+│   ├── SoundboardWindow.qml
+│   └── components/        # ChannelStrip, Fader, VUMeter, ParametricEQ, …
+├── web/              # browser/VR control panel (served on :8765)
+├── main.py           # QML ↔ Python bridge + entry point
+└── launch.py         # alternative launcher
+```
 
 ---
 

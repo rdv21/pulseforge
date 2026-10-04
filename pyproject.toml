@@ -9,7 +9,7 @@ description = "Virtual audio mixer with DSP mic processing for PipeWire"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
-authors = [{name = "Aielia"}]
+authors = [{name = "Denis Ruzaev", email = "rdv21@github.com"}]
 keywords = ["audio", "mixer", "pipewire", "dsp", "noise-suppression", "streaming"]
 classifiers = [
     "Development Status :: 4 - Beta",
