@@ -377,6 +377,9 @@ class PulseForgeBridge(QObject):
         if self._config.get("mic", {}).get("monitor", False):
             _wait_and_create(mic_source, "pulseforge_gaming", "Mic monitor restored")
 
+        # Restore external aux-input route
+        self._restore_aux_input()
+
     def _start_mic_chain(self):
         """Start the native Python mic processing chain."""
         cfg = self._config.get("mic", {})
@@ -775,14 +778,32 @@ class PulseForgeBridge(QObject):
 
     @Slot(result='QVariant')
     def getInputDevices(self):
-        sources = pw.list_sources()
         # Includes SteamVR HMD mic so users can route VR mic input through PulseForge
-        result = []
         saved = self._config.get("devices", {}).get("input", "")
-        for s in sources:
-            if s.name.startswith("pulseforge"):
+        return self._input_source_list(saved)
+
+    def _input_source_list(self, selected_name: str) -> list:
+        """Return selectable physical input sources as {name,id,internal,is_default}."""
+        result = []
+        for s in pw.list_sources():
+            if s.name.startswith("pulseforge") or "pulseforge" in s.name:
                 continue
-            result.append({"name": s.description, "id": s.id, "internal": s.name, "is_default": s.name == saved})
+            result.append({
+                "name": s.description,
+                "id": s.id,
+                "internal": s.name,
+                "is_default": s.name == selected_name,
+            })
+        return result
+
+    @Slot(result='QVariant')
+    def getAuxInputDevices(self):
+        """Sources selectable for the Aux external-input route (none → "None")."""
+        saved = self._config.get("devices", {}).get("aux_input", "")
+        result = [{"name": "None", "id": -1, "internal": "", "is_default": not saved}]
+        for s in self._input_source_list(saved):
+            s["is_default"] = False
+            result.append(s)
         return result
 
     @Slot(result='QVariant')
@@ -1219,6 +1240,63 @@ class PulseForgeBridge(QObject):
         # Set the configured device and redirect the native chain's capture process
         self._mic_chain.set_input_device(name)
         self._config["devices"]["input"] = name
+        config.save_config(self._config)
+
+    # ─── Aux external input routing ───
+
+    def _find_aux_loopback(self) -> Optional[int]:
+        """Return the module index of the current aux-input loopback, if any."""
+        aux_internal = pw._VIRTUAL_SINK_INTERNAL.get("aux", "pulseforge_aux")
+        for idx, src, sink in pw.list_loopbacks():
+            if sink == aux_internal:
+                return idx
+        return None
+
+    def _create_aux_loopback(self, source_name: str) -> Optional[int]:
+        """Loop an external source into the Aux channel sink and persist it."""
+        aux_internal = pw._VIRTUAL_SINK_INTERNAL.get("aux", "pulseforge_aux")
+        # Clear any previous route so we never stack loopbacks.
+        old = self._find_aux_loopback()
+        if old is not None:
+            pw.remove_loopback(old)
+        mod_idx = pw.create_loopback(source_name, aux_internal,
+                                     initial_volume=0.0, ramp_to=1.0, ramp_ms=150)
+        if mod_idx is not None:
+            print(f"  Aux input: {source_name} → {aux_internal}")
+        return mod_idx
+
+    def _restore_aux_input(self):
+        """Recreate the persisted aux-input loopback once the source appears."""
+        import threading
+        source_name = self._config.get("devices", {}).get("aux_input", "")
+        if not source_name:
+            return
+
+        def _try():
+            for attempt in range(15):  # 3s total, 200ms intervals
+                if any(s.name == source_name for s in pw.list_sources()):
+                    self._create_aux_loopback(source_name)
+                    print(f"  Aux input restored: {source_name} → aux (attempt {attempt+1})")
+                    return
+                time.sleep(0.2)
+            print(f"  Aux input: source {source_name} never appeared, giving up")
+
+        threading.Thread(target=_try, daemon=True).start()
+
+    @Slot(str)
+    def setAuxInput(self, name: str):
+        """Route an external input source into the Aux channel ("" / "None" clears it)."""
+        name = (name or "").strip()
+        old = self._find_aux_loopback()
+        if old is not None:
+            pw.remove_loopback(old)
+        if name and name != "None":
+            self._create_aux_loopback(name)
+            self._config["devices"]["aux_input"] = name
+            self.statusMessage.emit(f"Aux input: {name}")
+        else:
+            self._config["devices"]["aux_input"] = None
+            self.statusMessage.emit("Aux input cleared")
         config.save_config(self._config)
 
     @Slot(int, str)

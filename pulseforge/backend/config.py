@@ -12,6 +12,7 @@ DEFAULT_CONFIG = {
     "devices": {
         "output": None,   # sink node name
         "input": None,    # source node name
+        "aux_input": None,  # external source routed into the Aux channel
         "stream": None,   # stream destination sink node name
     },
     "groups": {

@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Aux In selector** — pick a second external input device in the header and it is looped
+  straight into the Aux channel (module-loopback → `pulseforge_aux`), so any line-in/interface
+  can join the mix. Persisted as `devices.aux_input`, restored on startup, never stacks
+  loopbacks, and `None` clears the route
 - **Web control panel** — browser/VR UI served on `http://localhost:8765` alongside the Qt app
   (mixer, mic, and soundboard control; real-time VU over WebSocket; stdlib-only server)
 - **Collision-safe soundboard publishing** — publishing a clip whose name already exists no

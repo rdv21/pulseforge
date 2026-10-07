@@ -48,6 +48,7 @@ ApplicationWindow {
     property var apps: []
     property var outputDevices: []
     property var inputDevices: []
+    property var auxInputDevices: []
     property var streamDevices: []
 
     // VU data (pushed from backend)
@@ -148,6 +149,7 @@ ApplicationWindow {
         if (typeof PulseForge !== "undefined" && PulseForge.getOutputDevices) {
             root.outputDevices = PulseForge.getOutputDevices()
             root.inputDevices = PulseForge.getInputDevices()
+            root.auxInputDevices = PulseForge.getAuxInputDevices()
             root.streamDevices = PulseForge.getStreamDevices()
         }
     }
@@ -247,6 +249,26 @@ ApplicationWindow {
                     for (var i = 0; i < root.inputDevices.length; i++) {
                         if (root.inputDevices[i].name === name) {
                             PulseForge.setInputDevice(root.inputDevices[i].id, root.inputDevices[i].internal)
+                            break
+                        }
+                    }
+                }
+            }
+
+            // Aux input selector — routes a second external source into the Aux channel
+            DeviceSelector {
+                label: "Aux In"
+                model: root.auxInputDevices.map(d => d.name)
+                selected: {
+                    for (var i = 0; i < root.auxInputDevices.length; i++) {
+                        if (root.auxInputDevices[i].is_default) return root.auxInputDevices[i].name
+                    }
+                    return "None"
+                }
+                onDeviceSelected: function(name) {
+                    for (var i = 0; i < root.auxInputDevices.length; i++) {
+                        if (root.auxInputDevices[i].name === name) {
+                            PulseForge.setAuxInput(root.auxInputDevices[i].internal)
                             break
                         }
                     }

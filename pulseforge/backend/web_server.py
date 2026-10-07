@@ -582,6 +582,15 @@ class WebServer:
             bridge.setSoundboardOutput(target)
             return {"status": "ok", "target": target}
 
+        # ─── Devices (input / aux external input) ───
+        if path == "/api/devices/aux-input" and method == "GET":
+            return {"devices": bridge.getAuxInputDevices()}
+
+        if path == "/api/devices/aux-input" and method == "POST":
+            name = params.get("name", "")
+            bridge.setAuxInput(name)
+            return {"status": "ok", "name": name}
+
         # ─── Mixer ───
         if path == "/api/mixer/channels" and method == "GET":
             return {"channels": bridge.getChannelGroups()}
