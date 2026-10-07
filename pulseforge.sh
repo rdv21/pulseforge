@@ -13,6 +13,12 @@ if [ -d "$AFX_SDK/external/cuda/lib" ]; then
   export PULSEFORGE_AFX_LD_SET=1
 fi
 
+# PulseForge spawns many short-lived threads/subprocesses (VU monitors,
+# channel recorders). glibc otherwise creates a malloc arena per thread and
+# never returns the memory to the OS; capping arenas stops the multi-GB
+# RSS blowup and swap growth seen after the app runs for a while.
+export MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}"
+
 export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-wayland}"
 export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
 

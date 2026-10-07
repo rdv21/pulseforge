@@ -22,7 +22,6 @@ import os
 import numpy as np
 from pathlib import Path
 from typing import Optional
-from collections import deque
 from dataclasses import dataclass, field
 
 SAMPLE_RATE = 48000
@@ -91,7 +90,14 @@ class ChannelRecorder:
         self.channel = channel
         self.source_name = source_name  # e.g. "pulseforge_game.monitor" or "pulseforge.mic.processed"
         self.channels = channels  # 2 for stereo monitors, 1 for mono mic
-        self._buffer = deque(maxlen=SAMPLE_RATE * channels * BUFFER_SECONDS)
+        # Raw interleaved float32 ring buffer. Storing raw bytes instead of a
+        # deque of boxed Python floats keeps each recorder at a fixed
+        # (SAMPLE_RATE * channels * BUFFER_SECONDS * 4) bytes slice of memory
+        # and makes snapshots a cheap memcpy instead of an O(N) object walk.
+        self._max_samples = SAMPLE_RATE * channels * BUFFER_SECONDS
+        self._buf = bytearray(self._max_samples * 4)
+        self._write_pos = 0
+        self._filled = 0
         self._proc: Optional[subprocess.Popen] = None
         self._thread: Optional[threading.Thread] = None
         self._running = False
@@ -102,6 +108,10 @@ class ChannelRecorder:
         if self._running:
             return
         self._running = True
+        with self._lock:
+            self._buf = bytearray(self._max_samples * 4)
+            self._write_pos = 0
+            self._filled = 0
         self._thread = threading.Thread(target=self._capture_loop, daemon=True)
         self._thread.start()
 
@@ -170,13 +180,50 @@ class ChannelRecorder:
                 data = self._proc.stdout.read(chunk_size)
                 if not data:
                     break
-                samples = np.frombuffer(data, dtype=np.float32)
                 with self._lock:
-                    self._buffer.extend(samples)
+                    self._write_bytes(data)
         except Exception as e:
             print(f"  ChannelRecorder[{self.channel}]: capture error: {e}")
         finally:
             self._running = False
+
+    def _write_bytes(self, data: bytes):
+        """Append raw f32 bytes into the ring buffer (called under self._lock)."""
+        n = len(data) // 4  # sample frames (drop any partial trailing sample)
+        if n == 0:
+            return
+        data = data[:n * 4]
+        mv = memoryview(self._buf)
+        pos = self._write_pos  # sample index
+        cap = self._max_samples
+        if pos + n <= cap:
+            mv[pos * 4:(pos + n) * 4] = data
+        else:
+            first = cap - pos
+            mv[pos * 4:] = data[:first * 4]
+            mv[0:(n - first) * 4] = data[first * 4:]
+        self._write_pos = (pos + n) % cap
+        self._filled = min(cap, self._filled + n)
+
+    def _snapshot(self) -> Optional[np.ndarray]:
+        """Return the ring buffer contents oldest-first as a float32 array.
+
+        Cheap: copies raw bytes out under the lock, then views them as f32
+        (zero-copy) so callers get a stable snapshot without holding the lock
+        across numpy work. Returns None when the recorder has no data yet.
+        """
+        with self._lock:
+            filled = self._filled
+            if filled == 0:
+                return None
+            mv = memoryview(self._buf)
+            start = self._write_pos - filled  # sample index; may be negative
+            if start >= 0:
+                raw = bytes(mv[start * 4:(start + filled) * 4])
+            else:
+                # Wrapped ring: oldest bytes live at the tail of the buffer.
+                raw = bytes(mv[start * 4:]) + bytes(mv[0:self._write_pos * 4])
+        return np.frombuffer(raw, dtype=np.float32)
 
     def _redirect_to_monitor(self, target_source: str, app_tag: str) -> bool:
         """Find our pw-cat source-output by app tag and redirect to target source.
@@ -214,47 +261,46 @@ class ChannelRecorder:
         Args:
             duration: Length of clip in seconds. None = full buffer (15s).
         """
-        with self._lock:
-            if len(self._buffer) == 0:
-                return None
-            samples = np.array(self._buffer, dtype=np.float32)
-            ch = self.channels
-            usable = (len(samples) // ch) * ch
-            samples = samples[:usable].reshape(-1, ch)
-            if duration is not None:
-                n = int(duration * SAMPLE_RATE)
-                samples = samples[-n:]
-            clip = AudioClip(
-                channel=self.channel,
-                samples=samples,
-                start_time=time.time() - len(samples) / SAMPLE_RATE,
-                duration=len(samples) / SAMPLE_RATE,
-            )
-            clip.trim_end = clip.duration
-            return clip
+        samples = self._snapshot()
+        if samples is None:
+            return None
+        ch = self.channels
+        usable = (len(samples) // ch) * ch
+        samples = samples[:usable].reshape(-1, ch)
+        if duration is not None:
+            n = int(duration * SAMPLE_RATE)
+            samples = samples[-n:]
+        clip = AudioClip(
+            channel=self.channel,
+            samples=samples,
+            start_time=time.time() - len(samples) / SAMPLE_RATE,
+            duration=len(samples) / SAMPLE_RATE,
+        )
+        clip.trim_end = clip.duration
+        return clip
 
     def get_waveform(self, num_peaks: int = 200) -> list:
         """Return waveform peaks for QML display.
 
         Returns list of {peak, rms} values, 0.0-1.0 normalized.
         """
-        with self._lock:
-            if len(self._buffer) == 0:
-                return []
-            samples = np.array(self._buffer, dtype=np.float32)
-            ch = self.channels
-            usable = (len(samples) // ch) * ch
-            samples = samples[:usable].reshape(-1, ch)
-            mono = samples.mean(axis=1) if ch > 1 else samples
-            chunk = max(1, len(mono) // num_peaks)
-            peaks = []
-            for i in range(0, len(mono), chunk):
-                block = mono[i:i+chunk]
-                if len(block) > 0:
-                    peak = float(np.max(np.abs(block)))
-                    rms = float(np.sqrt(np.mean(block**2)))
-                    peaks.append({"peak": peak, "rms": rms})
-            return peaks
+        samples = self._snapshot()
+        if samples is None or len(samples) == 0:
+            return []
+        ch = self.channels
+        usable = (len(samples) // ch) * ch
+        samples = samples[:usable].reshape(-1, ch)
+        mono = samples.mean(axis=1) if ch > 1 else samples
+        # Vectorized peak/RMS per bucket — no Python per-block loop.
+        chunk = max(1, len(mono) // num_peaks)
+        nblocks = len(mono) // chunk
+        if nblocks < 1:
+            return []
+        trimmed = mono[:nblocks * chunk].reshape(nblocks, chunk)
+        peaks = np.abs(trimmed).max(axis=1)
+        rms = np.sqrt((trimmed.astype(np.float32) ** 2).mean(axis=1))
+        return [{"peak": float(p), "rms": float(r)}
+                for p, r in zip(peaks, rms)]
 
     @property
     def is_running(self) -> bool:
@@ -387,6 +433,11 @@ class SoundboardBackend:
                     slot._procs = [p for p in slot._procs if p.poll() is None]
         clip_procs = getattr(self, "_clip_procs", None)
         if clip_procs:
+            for p in clip_procs:
+                try:
+                    p.poll()  # reap if it already exited
+                except Exception:
+                    pass
             self._clip_procs = [p for p in clip_procs if p.poll() is None]
 
     def play_sound(self, page: int, index: int):
@@ -590,6 +641,14 @@ class SoundboardBackend:
         self._clip_procs = []
 
     def is_clip_playing(self) -> bool:
+        procs = getattr(self, '_clip_procs', [])
+        if procs:
+            for p in procs:
+                try:
+                    p.poll()  # reap finished previews so they don't linger as zombies
+                except Exception:
+                    pass
+            self._clip_procs = [p for p in procs if p.poll() is None]
         return any(p.poll() is None for p in getattr(self, '_clip_procs', []))
 
     def clear_clip(self):

@@ -14,6 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longer overwrites it; an in-app dialog offers rename (auto-suggested `Name (1)`) or explicit overwrite
 
 ### Fixed
+- **Soundboard no longer lags / bloats memory while open** — channel recorders now keep a fixed
+  raw `float32` ring buffer instead of a `deque` of boxed Python floats. The 10 Hz live-waveform
+  refresh copied that deque into NumPy on the Qt GUI thread each tick (~20 ms per call, ~0.3 s CPU
+  per 10 s), stalling repaints and input; it also churned the glibc heap into hundreds of arenas
+  that never returned to the OS (multi-GB RSS + swap after long sessions). Snapshot + peak/RMS
+  computation is now vectorized and the waveform call drops to ~7 ms
+- `pulseforge.sh` caps `MALLOC_ARENA_MAX=2` to stop per-thread arena growth
 - Reap finished `pw-play` children so soundboard playback no longer accumulates zombie processes
 - Clean up transient `_preview.wav` / `_publish.wav` scratch files on shutdown
 - `pulseforge.sh` now runs the repository package (single source of truth) instead of
