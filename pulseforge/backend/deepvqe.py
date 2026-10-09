@@ -1,9 +1,9 @@
 """DeepVQE-S AI speech denoiser (ONNX).
 
-Runs the SteelSeries Sonar noise-cancellation model (Microsoft DeepVQE-S,
+Runs the DeepVQE noise-cancellation model (Microsoft DeepVQE-S,
 "R-Vox_DnzDrvMultiChannel_4.0.0") as a native Python mic processor.
 
-Signal contract (reverse-engineered from Sonar.APO.dll + validated offline):
+Signal contract (reverse-engineered from the Windows audio driver + validated offline):
 
   * STFT: 1024-point FFT, 480-sample hop (= one native 10 ms block), periodic
     Hann analysis/synthesis window.
@@ -36,7 +36,7 @@ HOP = 480                      # == native chain block size (10 ms)
 BINS = N_FFT // 2 + 1          # 513
 MAKEUP = 1.4                   # model output ~0.71x input on speech; restore unity
 
-_MODEL_PATH = Path(__file__).resolve().parent.parent / "models" / "sonar_deepvqe.onnx"
+_MODEL_PATH = Path(__file__).resolve().parent.parent / "models" / "deepvqe.onnx"
 
 
 def _periodic_hann(n: int) -> np.ndarray:

@@ -1,17 +1,9 @@
 #!/bin/bash
 # PulseForge launcher
-# Automatically sets up NVIDIA AFX library path if SDK is detected
 # Resolve symlink to find real script dir
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 cd "$SCRIPT_DIR"
 export PYTHONPATH="$SCRIPT_DIR:${PYTHONPATH:-}"
-
-AFX_SDK="${AFX_SDK_ROOT:-$HOME/.local/share/linux-broadcast/nvidia/current}"
-
-if [ -d "$AFX_SDK/external/cuda/lib" ]; then
-  export LD_LIBRARY_PATH="$AFX_SDK/external/cuda/lib:$AFX_SDK/features/denoiser/lib:$AFX_SDK/features/dereverb/lib:$AFX_SDK/features/dereverb_denoiser/lib:$AFX_SDK/features/studio_voice/lib:$AFX_SDK/nvafx/lib:${LD_LIBRARY_PATH:-}"
-  export PULSEFORGE_AFX_LD_SET=1
-fi
 
 # PulseForge spawns many short-lived threads/subprocesses (VU monitors,
 # channel recorders). glibc otherwise creates a malloc arena per thread and

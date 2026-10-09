@@ -203,6 +203,16 @@
                 document.getElementById(`tab-${tab}`).classList.add("active");
             });
         });
+        // Mic sub-tabs (Basic / Advanced)
+        document.querySelectorAll(".subtab-btn").forEach(btn => {
+            btn.addEventListener("click", () => {
+                const sub = btn.dataset.micsub;
+                document.querySelectorAll(".subtab-btn").forEach(b => b.classList.remove("active"));
+                btn.classList.add("active");
+                const mic = document.getElementById("tab-mic");
+                mic.classList.toggle("adv-active", sub === "advanced");
+            });
+        });
     }
 
     // ─── Soundboard ─────────────────────────────────────────────
@@ -640,7 +650,6 @@
         try {
             state.micState = await apiGet("mic/state");
             state.micSettings = await apiGet("mic/settings");
-            state.afxStatus = await apiGet("mic/afx/status");
         } catch (e) {
             toast("Failed to load mic settings", true);
             return;
@@ -671,30 +680,7 @@
             apiPost("mic/stream", { enabled: e.target.checked ? "true" : "false" });
         });
 
-        // AFX
-        const afx = state.afxStatus || {};
-        document.getElementById("afx-enabled").checked = afx.enabled || false;
-        document.getElementById("afx-enabled").addEventListener("change", (e) => {
-            apiPost("mic/afx/enabled", { enabled: e.target.checked ? "true" : "false" });
-        });
-
-        const afxMode = document.getElementById("afx-mode");
-        if (afx.effect_mode) afxMode.value = afx.effect_mode;
-        afxMode.addEventListener("change", () => {
-            apiPost("mic/afx/mode", { mode: afxMode.value });
-            toast("AFX mode: " + afxMode.value);
-        });
-
-        const intensitySlider = document.getElementById("afx-intensity");
-        intensitySlider.value = afx.intensity || 70;
-        document.getElementById("afx-intensity-val").textContent = intensitySlider.value + "%";
-        intensitySlider.addEventListener("change", () => {
-            const v = parseFloat(intensitySlider.value) / 100;
-            apiPost("mic/afx/intensity", { intensity: v });
-            document.getElementById("afx-intensity-val").textContent = intensitySlider.value + "%";
-        });
-
-        // DeepVQE-S AI denoise
+        // DeepVQE AI denoise
         let dv = {};
         try { dv = await apiGet("mic/deepvqe/status"); } catch (e) { dv = {}; }
         const dvEnabled = document.getElementById("deepvqe-enabled");
@@ -782,6 +768,11 @@
         bindSlider("gate-release", "gate/release", "value", " ms");
         document.getElementById("gate-enabled").addEventListener("change", (e) => {
             apiPost("mic/gate/enabled", { enabled: e.target.checked ? "true" : "false" });
+        });
+        const gateAuto = document.getElementById("gate-auto");
+        gateAuto.checked = gate.auto_threshold === true;
+        gateAuto.addEventListener("change", (e) => {
+            apiPost("mic/gate/auto_threshold", { auto: e.target.checked ? "true" : "false" });
         });
 
         // Compressor

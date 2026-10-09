@@ -27,11 +27,10 @@ DEFAULT_CONFIG = {
         "monitor": False,
         "gate":      {"threshold": -50.0, "enabled": True, "attack": 25.0, "hold": 300.0, "release": 200.0, "range": -25.0, "auto_threshold": False, "offset": 12.0},
         "eq":        {"enabled": True, "bands": []},  # populated from preset
-        "afx":       {"enabled": True, "effect_mode": "denoiser", "intensity": 0.7, "sdk_root": None},
-        "deepvqe":   {"enabled": False, "strength": 0.7},  # Sonar AI denoiser (ONNX)
+        "deepvqe":   {"enabled": False, "strength": 0.7},  # AI denoiser (ONNX)
         "hpf":       {"enabled": True, "freq": 90.0},  # high-pass (rumble/plosives)
         "ambient_nr": {"enabled": True, "level": 0.4},  # adaptive spectral NR
-        "mbcomp":    {"enabled": True},  # multiband compressor (Sonar-style)
+        "mbcomp":    {"enabled": True},  # multiband compressor
         "limiter":   {"enabled": True, "ceiling": -1.0},  # output limiter
         "compressor": {"threshold": -20.0, "amount": 3.0, "enabled": True, "attack": 3.0, "release": 250.0, "makeup": 0.0},
     },

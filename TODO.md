@@ -18,7 +18,7 @@
 ### Needs Testing
 - [ ] End-to-end recording with actual PipeWire audio
 - [ ] pw-cat stdout capture reliability (float32 pipe)
-- [ ] AFX + recording simultaneously
+- [ ] Mic + recording simultaneously
 - [ ] Sound file playback via pw-play
 - [ ] QML Canvas performance at 100ms refresh
 
@@ -42,29 +42,28 @@
 
 ## Core PulseForge
 
-### Mic Processing (Sonar-inspired)
-- [x] AI denoise (Sonar DeepVQE-S ONNX model) with strength slider
-- [x] Chain reorder: denoise → NR → gate (Sonar gates post-NR)
-- [x] Adaptive ambient NR (FFT spectral subtraction, room tone)
-- [x] High-pass filter (rumble/plosives, ~90 Hz)
-- [x] Multiband compressor (4-band Linkwitz-Riley crossovers)
-- [x] Output limiter (-1 dB ceiling)
-- [x] Auto-threshold noise gate (tracks noise floor + offset)
-- [ ] **AEC (Acoustic Echo Cancellation)** — Sonar's first stage. Cancel speaker
-  output from the mic so callers don't hear your game/media. Needs a reference
-  signal per render bus (loopback each group sink and feed as the AEC reference).
-  Largest remaining gap vs Sonar; separate project. (~Sonar `AECState` +
-  `AECChatRenderDeviceId`/`AECGameDeviceId`/`AECMediaDeviceId`.)
-- [ ] Impact/click noise reduction (keyboard/desk transients) — Sonar `ImpactNoiseReduction`
-- [ ] De-esser / Clarity (sibilance) — Sonar `Clarity`
-- [ ] EQ filter types: add shelf + HP/LP, extend to 10 bands — Sonar `ParametricEqFilter1..10`
+### Mic Processing
+- [x] AI denoise (DeepVQE ONNX model) with strength slider — top-level control
+- [x] Chain reorder: denoise → NR → gate (gate runs post-NR)
+- [x] Adaptive ambient NR (FFT spectral subtraction, room tone) — Advanced tab
+- [x] High-pass filter (rumble/plosives, ~90 Hz) — Advanced tab
+- [x] Multiband compressor (4-band Linkwitz-Riley crossovers) — Advanced tab
+- [x] Output limiter (-1 dB ceiling) — Advanced tab
+- [x] Auto-threshold noise gate (tracks noise floor + offset) — Advanced tab
+- [x] Removed NVIDIA AFX support entirely (superseded by the ONNX AI denoise)
+- [ ] **AEC (Acoustic Echo Cancellation)** — cancel speaker output from the mic so
+  callers don't hear your game/media. Needs a reference signal per render bus
+  (loopback each group sink and feed as the AEC reference). Largest remaining gap
+  vs a full mic suite; separate project.
+- [ ] Impact/click noise reduction (keyboard/desk transients)
+- [ ] De-esser / clarity (sibilance)
+- [ ] EQ filter types: add shelf + HP/LP, extend to 10 bands
 - [ ] Run DeepVQE on its native 512-hop / seq-2 framing (~1-2 dB more, fewer artifacts)
 
 ### Needs Work
 - [ ] Stale system install (`/usr/lib/python3.14/site-packages/pulseforge/`, `/usr/bin/pulseforge`,
   system `.desktop` + icons) — **deferred: needs sudo**. Repo is now the source of truth, so this
   is no longer on the runtime path; remove with `sudo make uninstall` when convenient.
-- [ ] Cleaner AFX "not available" messaging (currently prints error code 6)
 - [ ] Main.qml WindowStaysOnTopHint — make configurable
 - [ ] Old user install `~/.local/lib/python3.14/site-packages/pulseforge/` is now unused
   (launcher imports the repo); remove once confirmed

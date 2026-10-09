@@ -1,14 +1,14 @@
 """Native Python mic processing chain.
 
 Captures audio from the hardware mic via pw-cat --record, processes it
-through NVIDIA AFX noise removal → gate → EQ → compressor in Python,
-and plays it back via pw-cat --playback to create the
+through the DSP chain (denoise → NR → gate → HPF → EQ → comp → limiter)
+in Python, and plays it back via pw-cat --playback to create the
 pulseforge.mic.processed node.
 
 All parameters update in real-time — no process restarts needed.
 
 Audio format: float32, 48kHz, mono.
-Buffer size: 480 samples (10ms) — matches AFX frame size.
+Buffer size: 480 samples (10ms).
 """
 import subprocess
 import threading
@@ -24,7 +24,7 @@ from .process_manager import get_manager
 # Audio settings
 SAMPLE_RATE = 48000
 CHANNELS = 1  # Hardware mic is mono — capture mono, process mono, output mono
-BUFFER_SAMPLES = 480  # 10ms — matches AFX frame size
+BUFFER_SAMPLES = 480  # 10ms
 BUFFER_BYTES = BUFFER_SAMPLES * CHANNELS * 4  # float32 = 4 bytes
 
 # Spectrum analyzer settings
@@ -95,7 +95,7 @@ PROCESS_CATEGORY = "native-mic"
 
 
 class NativeMicChain:
-    """Python-native mic processing chain with NVIDIA AFX noise removal."""
+    """Python-native mic processing chain."""
 
     def __init__(self):
         self.gate = dsp.GateProcessor()
@@ -103,38 +103,29 @@ class NativeMicChain:
         self.emi_filter = dsp.EMIFilter(fundamental_hz=240.0, num_harmonics=2, bin_radius=1)
 
         # Tonal noise notch filters — removes line noise / coil whine / USB EMI
-        # before AFX sees the signal, so AFX doesn't have to fight tonal artifacts
+        # before the chain, so the denoiser doesn't have to fight tonal artifacts
         self.notch_chain = dsp.NotchFilterChain(
             freqs=[128.0, 218.0],  # tuned to measured noise peaks
             q=15.0,
             block_size=BUFFER_SAMPLES,
         )
 
-        # NVIDIA AFX — RTX Voice denoiser (optional; needs the NVIDIA SDK)
-        self._afx = dsp.AFXNoiseProcessor(
-            effect_mode='denoiser_v2',
-            intensity=0.7,
-            enabled=True,
-            frame_samples=BUFFER_SAMPLES,
-        )
-
-        # DeepVQE-S — Sonar's AI speech denoiser (ONNX, runs on CPU/GPU).
-        # Independent of AFX; either, both, or neither can be enabled.
+        # DeepVQE — AI speech denoiser (ONNX, runs on CPU/GPU).
         self._deepvqe = DeepVQEDenoiser(strength=0.7, enabled=False)
 
         # Adaptive ambient NR (FFT spectral subtraction) — steady room tone.
         self.ambient_nr = dsp.AmbientNoiseReduction(level=0.4, enabled=True)
 
-        # High-pass filter — removes rumble/plosives/handling (Sonar has one).
+        # High-pass filter — removes rumble/plosives/handling.
         self.hpf = dsp.BiquadHighPass(freq=90.0, q=0.707)
         self._hpf_enabled = True
 
-        # Compression: multiband (preferred, Sonar-style) with the single-band
-        # CompressorProcessor kept as the fallback engine (used per-band too).
+        # Compression: multiband with the single-band CompressorProcessor
+        # kept as the fallback engine (used per-band too).
         self.mb_compressor = dsp.MultibandCompressor(enabled=True)
         self.compressor = dsp.CompressorProcessor()
 
-        # Output limiter — catches compressor makeup + EQ boosts (Sonar has one).
+        # Output limiter — catches compressor makeup + EQ boosts.
         self.limiter = dsp.LimiterProcessor(ceiling_db=-1.0, enabled=True)
 
         self._capture_proc = None
@@ -142,7 +133,7 @@ class NativeMicChain:
         self._thread: Optional[threading.Thread] = None
         self._running = False
 
-        # Pre-gain no longer needed — AFX handles raw mic levels well
+        # Pre-gain no longer needed — denoiser handles raw mic levels well
         self._pre_gain = 1.0
         self._post_atten = 1.0
 
@@ -315,10 +306,6 @@ class NativeMicChain:
             self._playback_proc = None
 
         # Destroy C state after thread is fully stopped
-        try:
-            self._afx.destroy()
-        except Exception as e:
-            print(f"  NativeMicChain: noise destroy error: {e}")
         try:
             self._deepvqe.destroy()
         except Exception as e:
@@ -548,13 +535,9 @@ class NativeMicChain:
                 if CHANNELS == 1:
                     block = block.squeeze()  # (480,) 1D array
 
-                # ── Processing chain (Sonar-inspired order) ──
+                # ── Processing chain ──
                 # AI denoise → adaptive NR → gate → HPF → EQ → comp → limiter
                 block = self._deepvqe.process(block)
-                if not np.all(np.isfinite(block)):
-                    block = np.zeros_like(block)
-
-                block = self._afx.process(block)
                 if not np.all(np.isfinite(block)):
                     block = np.zeros_like(block)
 
@@ -563,7 +546,7 @@ class NativeMicChain:
                 if not np.all(np.isfinite(block)):
                     block = np.zeros_like(block)
 
-                # gate AFTER denoise (Sonar gates post-NR, not pre-signal)
+                # gate AFTER denoise (gate post-NR, not the raw signal)
                 block = self.gate.process(block)
                 if not np.all(np.isfinite(block)):
                     block = np.zeros_like(block)
@@ -785,14 +768,7 @@ class NativeMicChain:
         for i, b in enumerate(bands[:8]):
             self.eq.set_band(i, b['freq'], b['gain'], b['q'])
 
-    def set_noise(self, intensity: float = None, enabled: bool = None):
-        """Back-compat shim — routes to the AFX processor."""
-        if intensity is not None:
-            self._afx.set_intensity(max(0.0, min(1.0, intensity / 100.0)))
-        if enabled is not None:
-            self._afx.set_enabled(enabled)
-
-    # ─── DeepVQE-S AI denoiser ────────────────────────────────────
+    # ─── DeepVQE AI denoiser ──────────────────────────────────────
 
     def set_deepvqe(self, strength: float = None, enabled: bool = None):
         """Set AI denoiser strength (0.0-1.0) and/or enable state."""

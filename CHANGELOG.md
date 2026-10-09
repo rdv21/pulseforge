@@ -8,26 +8,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **Sonar-inspired mic chain upgrade** — the mic chain is reordered and extended to
-  match SteelSeries Sonar's design: **AI denoise → adaptive NR → gate → HPF → EQ →
-  multiband comp → limiter**. New stages, each toggleable with its setting persisted:
+- **Advanced mic chain** — the mic chain now runs **AI denoise → adaptive NR → gate →
+  HPF → EQ → multiband comp → limiter**. New stages, each toggleable with its
+  setting persisted, grouped under an **Advanced** sub-tab in the mic window:
   - **Adaptive ambient NR** — FFT spectral subtraction with a slow noise-floor tracker
-    (steady room tone: fans, AC, hiss). Sonar `CaptureAmbientNoiseReduction`-style.
+    (steady room tone: fans, AC, hiss).
   - **High-pass filter** — ~90 Hz, removes rumble/plosives/handling noise.
   - **Multiband compressor** — 4 bands via Linkwitz-Riley 4th-order crossovers;
     the single-band `CompressorProcessor` is retained as the fallback engine.
   - **Output limiter** — −1 dBFS ceiling, catches compressor makeup + EQ boosts.
-  - **Auto-threshold noise gate** — tracks the noise floor + offset (Sonar
-    `NoiseGateAutoThreshold`), alongside the existing manual threshold.
-  - Gate now runs **after** denoise (Sonar gates post-NR, not the raw signal).
-- **AI Denoise (Sonar DeepVQE-S)** — the SteelSeries Sonar noise-cancellation neural
-  model (Microsoft DeepVQE-S, ONNX) runs natively in the mic chain as an optional
-  denoiser, independent of NVIDIA AFX and usable on any GPU/CPU. Includes a
-  **Strength** dry/wet slider in both the Qt mic window and the web panel
-  (`/api/mic/deepvqe/status|enabled|strength`). Offline validation on real speech:
-  ~9 dB SNR improvement, ~0.75 ms/frame on CPU. Toggle + strength persist to config
-  (`mic.deepvqe`). The ONNX graph was reverse-engineered from the Sonar audio driver
-  (`Sonar.APO.dll`) — see `docs/deepvqe.md`.
+  - **Auto-threshold noise gate** — tracks the noise floor + offset, alongside the
+    existing manual threshold.
+  - Gate now runs **after** denoise (post-NR, not on the raw signal).
+- **AI Denoise (DeepVQE)** — a DeepVQE-S speech-enhancement model (ONNX) runs
+  natively in the mic chain as an optional denoiser, usable on any GPU/CPU.
+  Includes a **Strength** dry/wet slider in both the Qt mic window and the web
+  panel (`/api/mic/deepvqe/status|enabled|strength`). Offline validation on real
+  speech: ~9 dB SNR improvement, ~0.75 ms/frame on CPU. Toggle + strength persist
+  to config (`mic.deepvqe`). See `docs/deepvqe.md`.
+
+### Removed
+- **NVIDIA AFX support removed entirely** — the AFX noise processor, its SDK
+  path/`LD_LIBRARY_PATH` bootstrap, config key (`mic.afx`), API routes
+  (`/api/mic/afx/*`), QML + web controls, and launcher SDK detection are gone.
+  The ONNX **AI Denoise** replaces it and works without an RTX GPU.
 - **Aux In selector** — pick a second external input device in the header and it is looped
   straight into the Aux channel (module-loopback → `pulseforge_aux`), so any line-in/interface
   can join the mix. Persisted as `devices.aux_input`, restored on startup, never stacks

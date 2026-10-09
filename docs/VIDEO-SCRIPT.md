@@ -8,7 +8,7 @@
 PulseForge is a virtual audio mixer for Linux. It runs on PipeWire and gives you a full mixing desk — channel strips, faders, VU meters, mic processing, stream routing — all in one app. No terminal, no config files, no JACK.
 
 **Who it's for:**
-Streamers, gamers, podcasters, and anyone on Linux who wants clean audio without becoming an audio engineer. If you come from Windows and used Voicemeeter or SteelSeries GG Sonar — this is the Linux equivalent.
+Streamers, gamers, podcasters, and anyone on Linux who wants clean audio without becoming an audio engineer. If you come from Windows and used Voicemeeter or a gaming-audio mixer suite — this is the Linux equivalent.
 
 **The problem it solves:**
 On Linux, your audio goes through PipeWire → WirePlumber → ALSA. There's no built-in mixer UI. Want to lower just your game volume without lowering Discord? You're opening a separate volume app or running pactl commands. Want noise cancellation on your mic? You're setting up LV2 filter-chains. Want a separate stream mix for OBS? Good luck. PulseForge does all of this in one window.
@@ -55,7 +55,7 @@ Switching any device reconnects automatically — no restart needed.
 
 ### Mic Settings Window
 
-Click the gear icon to open the mic processing window. This is where PulseForge replaces SteelSeries GG Sonar / Voicemeeter:
+Click the gear icon to open the mic processing window. This is where PulseForge replaces Voicemeeter-style mic processing:
 
 **Monitor Button:** Hear yourself through your speakers in real-time. Useful for testing your mic chain.
 

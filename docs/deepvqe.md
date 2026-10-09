@@ -1,23 +1,23 @@
-# AI Denoise (Sonar DeepVQE-S)
+# AI Denoise (DeepVQE)
 
-PulseForge can run the **SteelSeries Sonar** noise-cancellation neural network
-natively as an optional mic processor, independent of NVIDIA AFX.
+PulseForge runs a **DeepVQE-S** speech-enhancement neural network natively as an
+optional mic processor, independent of the rest of the chain.
 
 ## What it is
 
 The model is **Microsoft DeepVQE-S** — a streaming speech-enhancement network
-(GRU + multi-scale convolutional encoder/decoder) trained by SteelSeries as
-their "R-Vox" denoiser (`R-Vox_DnzDrvMultiChannel_4.0.0.onnx`). It ships inside
-Sonar's Windows audio driver (`Sonar.APO.dll`) as an embedded ONNX graph and was
+(GRU + multi-scale convolutional encoder/decoder). The shipped variant is the
+multi-channel "R-Vox" denoiser (`R-Vox_DnzDrvMultiChannel_4.0.0.onnx`), embedded
+as an ONNX graph in a Windows audio driver (an Audio Processing Object) and
 extracted for use here.
 
-- Model file: `pulseforge/models/sonar_deepvqe.onnx` (2.3 MB, ~540K params)
+- Model file: `pulseforge/models/deepvqe.onnx` (2.3 MB, ~540K params)
 - Runtime: `onnxruntime` (CPU by default; CUDA/DirectML if available)
-- Independent of AFX — either, both, or neither may be enabled
+- Independent of the other mic stages — any combination can be enabled
 
 ## Signal contract (reverse-engineered)
 
-Derived from the model graph + `Sonar.APO.dll` metadata, and validated offline:
+Derived from the model graph + driver metadata, and validated offline:
 
 | Stage | Setting |
 |-------|---------|
@@ -36,7 +36,8 @@ Notes:
 ## Controls
 
 - **Enable** toggle and **Strength** slider (dry/wet blend, 0–100 %) in the Qt mic
-  window and the web panel.
+  window and the web panel (AI Denoise is a top-level control; the other stages
+  live under the **Advanced** sub-tab).
 - API: `GET /api/mic/deepvqe/status`, `POST /api/mic/deepvqe/enabled`,
   `POST /api/mic/deepvqe/strength`.
 - Persisted under `mic.deepvqe` = `{enabled, strength}`.

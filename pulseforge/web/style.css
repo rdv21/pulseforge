@@ -123,6 +123,40 @@ body {
     display: block;
 }
 
+/* Mic sub-tabs (Basic / Advanced) */
+.subtabs {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 12px;
+}
+
+.subtab-btn {
+    flex: 1;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    font-size: 12px;
+    font-weight: 600;
+    padding: 6px 12px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.subtab-btn.active {
+    background: var(--accent);
+    color: var(--text-bright);
+    border-color: var(--accent);
+}
+
+.mic-adv {
+    display: none;
+}
+
+#tab-mic.adv-active .mic-adv {
+    display: block;
+}
+
 /* ─── Soundboard ─── */
 
 #soundboard-pages {

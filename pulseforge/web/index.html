@@ -140,6 +140,12 @@
     <!-- ═══ Tab: Mic ═══ -->
     <div id="tab-mic" class="tab-panel">
 
+        <!-- Mic sub-tabs (Basic / Advanced) -->
+        <div class="subtabs" id="mic-subtabs">
+            <button class="subtab-btn active" data-micsub="basic">Basic</button>
+            <button class="subtab-btn" data-micsub="advanced">Advanced</button>
+        </div>
+
         <!-- Microphone -->
         <div class="mic-section">
             <div class="mic-section-header">
@@ -167,33 +173,10 @@
             </div>
         </div>
 
-        <!-- AFX -->
+        <!-- DeepVQE AI Denoise -->
         <div class="mic-section">
             <div class="mic-section-header">
-                <div class="mic-section-title">AFX (NVIDIA Audio Effects)</div>
-                <label class="toggle"><input type="checkbox" id="afx-enabled"><span class="toggle-switch"></span></label>
-            </div>
-            <div class="param-row">
-                <span class="param-label">Mode</span>
-                <select id="afx-mode" style="flex: 1;">
-                    <option value="denoiser">Denoiser</option>
-                    <option value="denoiser_v2">Denoiser V2</option>
-                    <option value="dereverb">De-reverb</option>
-                    <option value="dereverb_denoiser">De-reverb + Denoiser</option>
-                    <option value="studio_voice_low_latency">Studio Voice (Low Latency)</option>
-                </select>
-            </div>
-            <div class="param-row">
-                <span class="param-label">Intensity</span>
-                <input type="range" id="afx-intensity" min="0" max="100" value="70">
-                <span class="param-value" id="afx-intensity-val">70%</span>
-            </div>
-        </div>
-
-        <!-- DeepVQE-S AI Denoise -->
-        <div class="mic-section">
-            <div class="mic-section-header">
-                <div class="mic-section-title">AI Denoise (Sonar DeepVQE-S)</div>
+                <div class="mic-section-title">AI Denoise (DeepVQE)</div>
                 <label class="toggle"><input type="checkbox" id="deepvqe-enabled"><span class="toggle-switch"></span></label>
             </div>
             <div class="param-row">
@@ -204,7 +187,7 @@
         </div>
 
         <!-- Adaptive Ambient NR -->
-        <div class="mic-section">
+        <div class="mic-section mic-adv">
             <div class="mic-section-header">
                 <div class="mic-section-title">Ambient NR (room tone)</div>
                 <label class="toggle"><input type="checkbox" id="ambient-enabled"><span class="toggle-switch"></span></label>
@@ -217,7 +200,7 @@
         </div>
 
         <!-- High-pass -->
-        <div class="mic-section">
+        <div class="mic-section mic-adv">
             <div class="mic-section-header">
                 <div class="mic-section-title">High-Pass Filter</div>
                 <label class="toggle"><input type="checkbox" id="hpf-enabled"><span class="toggle-switch"></span></label>
@@ -230,7 +213,7 @@
         </div>
 
         <!-- Multiband compressor -->
-        <div class="mic-section">
+        <div class="mic-section mic-adv">
             <div class="mic-section-header">
                 <div class="mic-section-title">Multiband Compressor (4-band)</div>
                 <label class="toggle"><input type="checkbox" id="mbcomp-enabled"><span class="toggle-switch"></span></label>
@@ -238,7 +221,7 @@
         </div>
 
         <!-- Limiter -->
-        <div class="mic-section">
+        <div class="mic-section mic-adv">
             <div class="mic-section-header">
                 <div class="mic-section-title">Output Limiter</div>
                 <label class="toggle"><input type="checkbox" id="limiter-enabled"><span class="toggle-switch"></span></label>
@@ -247,6 +230,14 @@
                 <span class="param-label">Ceiling</span>
                 <input type="range" id="limiter-ceiling" min="-12" max="0" step="1" value="-1">
                 <span class="param-value" id="limiter-ceiling-val">-1 dB</span>
+            </div>
+        </div>
+
+        <!-- Gate auto-threshold -->
+        <div class="mic-section mic-adv">
+            <div class="mic-section-header">
+                <div class="mic-section-title">Gate Auto-Threshold</div>
+                <label class="toggle"><input type="checkbox" id="gate-auto"><span class="toggle-switch"></span></label>
             </div>
         </div>
 

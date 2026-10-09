@@ -18,42 +18,6 @@ import re
 from pathlib import Path
 from typing import Optional
 
-# ─── NVIDIA AFX SDK: ensure LD_LIBRARY_PATH is set before any dlopen calls ───
-# libnv_audiofx.so internally dlopens feature libs (libnv_audiofx_denoiser.so)
-# by bare name. The dynamic linker only searches RPATH and LD_LIBRARY_PATH
-# for bare-name dlopen — RTLD_GLOBAL preloading is NOT sufficient because
-# it doesn't trigger the feature lib's init constructor.
-# We must set LD_LIBRARY_PATH BEFORE the process starts, so if it's not
-# already set, we re-exec ourselves with it.
-_AFX_SDK_CANDIDATES = [
-    Path.home() / '.local/share/linux-broadcast/nvidia/current',
-    Path.home() / '.local/opt/nvidia/afx',
-    Path('/opt/nvidia/afx'),
-]
-_afx_marker = 'PULSEFORGE_AFX_LD_SET'
-if _afx_marker not in os.environ:
-    for _afx_root in _AFX_SDK_CANDIDATES:
-        _nvafx_lib = _afx_root / 'nvafx' / 'lib' / 'libnv_audiofx.so'
-        if _nvafx_lib.exists():
-            _afx_dirs = [
-                str(_afx_root / 'nvafx' / 'lib'),
-                str(_afx_root / 'external' / 'cuda' / 'lib'),
-                str(_afx_root / 'features' / 'denoiser' / 'lib'),
-            ]
-            _existing = os.environ.get('LD_LIBRARY_PATH', '')
-            if _existing:
-                _afx_dirs.append(_existing)
-            os.environ['LD_LIBRARY_PATH'] = ':'.join(_afx_dirs)
-            os.environ[_afx_marker] = '1'
-            # Re-exec so the dynamic linker picks up LD_LIBRARY_PATH.
-            # Preserve the original invocation (module mode or script mode).
-            _argv = [sys.executable]
-            if getattr(sys.flags, 'warn_unicode', 0):
-                _argv.append('-W')
-            os.execv(sys.executable, _argv + sys.argv)
-            break
-# ─── End AFX SDK path setup ───
-
 from PySide6.QtCore import QObject, QUrl, Signal, Slot, Property, QTimer, QThread, QSize
 from PySide6.QtGui import QGuiApplication, QIcon, QAction, QPixmap
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
@@ -63,7 +27,6 @@ from PySide6.QtQuick import QQuickImageProvider
 from .backend import config
 from .backend import pipewire_ctl as pw
 from .backend import app_router
-from .backend.dsp import AFXNoiseProcessor
 from .backend.native_chain import NativeMicChain
 from .backend.vu_meter import get_poller
 from .backend.process_manager import get_manager
@@ -402,14 +365,7 @@ class PulseForgeBridge(QObject):
         if eq_bands:
             self._mic_chain.set_eq_bands(eq_bands, eq_cfg.get("enabled", True))
 
-        # Apply AFX settings
-        afx_cfg = cfg.get("afx", {})
-        afx = self._mic_chain._afx
-        afx.set_effect_mode(afx_cfg.get("effect_mode", "denoiser"))
-        afx.set_intensity(afx_cfg.get("intensity", 0.7))
-        afx.set_enabled(afx_cfg.get("enabled", True))
-
-        # Apply DeepVQE-S AI denoiser settings
+        # Apply DeepVQE AI denoiser settings
         dv_cfg = cfg.get("deepvqe", {})
         self._mic_chain.set_deepvqe(
             strength=dv_cfg.get("strength", 0.7),
@@ -1063,46 +1019,7 @@ class PulseForgeBridge(QObject):
         self._config["mic"]["gate"]["release"] = release_ms
         config.save_config(self._config)
 
-    # ─── AFX (NVIDIA Audio Effects) Slots ───
-
-    @Slot(result='QVariant')
-    def getAfxStatus(self):
-        """Return AFX availability and current settings for QML."""
-        afx = self._mic_chain._afx
-        afx_cfg = self._config.get("mic", {}).get("afx", {})
-        return {
-            "available": afx.available,
-            "enabled": afx_cfg.get("enabled", True),
-            "effect_mode": afx_cfg.get("effect_mode", "denoiser"),
-            "intensity": int(afx_cfg.get("intensity", 0.7) * 100),
-        }
-
-    @Slot(str)
-    def setAfxEffectMode(self, mode: str):
-        """Change AFX effect mode — requires re-initialization."""
-        afx = self._mic_chain._afx
-        afx.set_effect_mode(mode)
-        self._config.setdefault("mic", {}).setdefault("afx", {})["effect_mode"] = mode
-        config.save_config(self._config)
-        self.statusMessage.emit(f"AFX mode: {mode}")
-
-    @Slot(float)
-    def setAfxIntensity(self, intensity: float):
-        """Set AFX intensity (0.0-1.0 from QML slider)."""
-        afx = self._mic_chain._afx
-        afx.set_intensity(max(0.0, min(1.0, intensity)))
-        self._config.setdefault("mic", {}).setdefault("afx", {})["intensity"] = intensity
-        config.save_config(self._config)
-
-    @Slot(bool)
-    def setAfxEnabled(self, enabled: bool):
-        """Toggle AFX on/off."""
-        self._mic_chain._afx.set_enabled(enabled)
-        self._config.setdefault("mic", {}).setdefault("afx", {})["enabled"] = enabled
-        config.save_config(self._config)
-        self.statusMessage.emit(f"AFX {'enabled' if enabled else 'disabled'}")
-
-    # ─── DeepVQE-S AI Denoiser Slots ───
+    # ─── DeepVQE AI Denoiser Slots ───
 
     @Slot(result='QVariant')
     def getDeepvqeStatus(self):
@@ -1286,12 +1203,6 @@ class PulseForgeBridge(QObject):
                 "range": mic.get("gate", {}).get("range", -25.0),
                 "auto_threshold": mic.get("gate", {}).get("auto_threshold", False),
                 "offset": mic.get("gate", {}).get("offset", 12.0),
-            },
-            "afx": {
-                "available": self._mic_chain._afx.available,
-                "enabled": mic.get("afx", {}).get("enabled", True),
-                "effect_mode": mic.get("afx", {}).get("effect_mode", "denoiser"),
-                "intensity": int(mic.get("afx", {}).get("intensity", 0.7) * 100),
             },
             "deepvqe": {
                 "available": self._mic_chain._deepvqe.available,

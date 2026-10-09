@@ -650,26 +650,7 @@ class WebServer:
             bridge.setMicStream(enabled)
             return {"status": "ok"}
 
-        # ─── AFX ───
-        if path == "/api/mic/afx/status" and method == "GET":
-            return bridge.getAfxStatus()
-
-        if path == "/api/mic/afx/enabled" and method == "POST":
-            enabled = params.get("enabled", "false").lower() == "true"
-            bridge.setAfxEnabled(enabled)
-            return {"status": "ok"}
-
-        if path == "/api/mic/afx/mode" and method == "POST":
-            mode = params.get("mode", "denoiser")
-            bridge.setAfxEffectMode(mode)
-            return {"status": "ok"}
-
-        if path == "/api/mic/afx/intensity" and method == "POST":
-            intensity = float(params.get("intensity", 0.7))
-            bridge.setAfxIntensity(intensity)
-            return {"status": "ok"}
-
-        # ─── DeepVQE-S AI Denoiser ───
+        # ─── DeepVQE AI Denoiser ───
         if path == "/api/mic/deepvqe/status" and method == "GET":
             return bridge.getDeepvqeStatus()
 

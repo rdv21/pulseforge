@@ -21,6 +21,7 @@ Window {
     property var presetList: []
     property bool _loadingPreset: false
     property bool _loading: false
+    property int micTab: 0  // 0 = Basic, 1 = Advanced
 
     Connections {
         target: typeof PulseForge !== "undefined" ? PulseForge : null
@@ -50,20 +51,13 @@ Window {
         // Gate
         gateCard.cardEnabled = s.gate.enabled
         gateCard.sliderValue = s.gate.threshold
-        // AFX
-        var afx = s.afx || {}
-        afxEnableCheckbox.checked = afx.enabled
-        afxCard.sliderValue = afx.intensity || 70
-        afxModeCombo.currentIndex = afxModeCombo.indexOfValue(afx.effect_mode || "denoiser")
-        afxStatusText.text = afx.available ? "RTX GPU — Active" : "No RTX GPU detected"
-        afxStatusText.color = afx.available ? micWindow.streamGreen : "#aa4444"
-        // DeepVQE-S AI denoise
+        // DeepVQE AI denoise
         var dv = s.deepvqe || {}
         dvEnableCheckbox.checked = dv.enabled
         dvCard.sliderValue = dv.strength || 70
         dvStatusText.text = dv.available ? "AI model loaded" : "Model unavailable"
         dvStatusText.color = dv.available ? micWindow.streamGreen : "#aa4444"
-        // Chain extras (Sonar-inspired)
+        // Chain extras (advanced)
         var hpf = s.hpf || {}
         hpfCard.cardEnabled = hpf.enabled !== false
         hpfCard.sliderValue = hpf.freq || 90
@@ -136,9 +130,39 @@ Window {
                 }
             }
 
+            // ─── Tab selector (Basic / Advanced) ───
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 6
+                Repeater {
+                    model: ["Basic", "Advanced"]
+                    Rectangle {
+                        Layout.fillWidth: true
+                        height: 28
+                        radius: 6
+                        color: micWindow.micTab === index ? micWindow.accent : micWindow.bgCard
+                        border.width: 1
+                        border.color: micWindow.micTab === index ? micWindow.accent : micWindow.borderColor
+                        Text {
+                            anchors.centerIn: parent
+                            text: modelData
+                            font.pixelSize: 11
+                            font.bold: true
+                            color: micWindow.micTab === index ? "white" : micWindow.textDim
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: micWindow.micTab = index
+                        }
+                    }
+                }
+            }
+
             // ─── Monitor ───
             RowLayout {
                 Layout.fillWidth: true
+                visible: micWindow.micTab === 0
                 spacing: 8
                 Text {
                     text: "Monitor (route mic to mix)"
@@ -159,6 +183,7 @@ Window {
             // ═══ EQ ═══
             Rectangle {
                 Layout.fillWidth: true
+                visible: micWindow.micTab === 0
                 radius: 8
                 color: micWindow.bgCard
                 border.width: 1
@@ -349,121 +374,10 @@ Window {
                 }
             }
 
-            // ═══ NVIDIA AFX ═══
+            // ═══ AI Denoise (DeepVQE) ═══
             Rectangle {
                 Layout.fillWidth: true
-                radius: 8
-                color: micWindow.bgCard
-                border.width: 1
-                border.color: micWindow.borderColor
-                implicitHeight: afxColumn.implicitHeight + 20
-
-                ColumnLayout {
-                    id: afxColumn
-                    anchors.fill: parent
-                    anchors.margins: 10
-                    spacing: 6
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 6
-
-                        Text {
-                            text: "⚡ NVIDIA AFX — RTX Voice"
-                            font.pixelSize: 12
-                            font.bold: true
-                            color: micWindow.textDim
-                            Layout.fillWidth: true
-                        }
-                        Text {
-                            id: afxStatusText
-                            text: "Checking..."
-                            font.pixelSize: 10
-                            color: micWindow.textDim
-                        }
-                        Rectangle {
-                            id: afxEnableCheckbox
-                            width: 16; height: 16
-                            radius: 3
-                            color: checked ? micWindow.accent : micWindow.bgDark
-                            border.width: 1
-                            border.color: checked ? micWindow.accent : micWindow.borderColor
-                            property bool checked: true
-                            Text {
-                                anchors.centerIn: parent
-                                text: "✓"
-                                font.pixelSize: 11
-                                font.bold: true
-                                color: "white"
-                                visible: parent.checked
-                            }
-                            MouseArea {
-                                anchors.fill: parent
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: {
-                                    parent.checked = !parent.checked
-                                    if (!micWindow._loading && typeof PulseForge !== "undefined") PulseForge.setAfxEnabled(parent.checked)
-                                }
-                            }
-                        }
-                        Text {
-                            text: "Enable"
-                            font.pixelSize: 10
-                            color: micWindow.textColor
-                        }
-                    }
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 6
-                        Text {
-                            text: "Mode:"
-                            font.pixelSize: 10
-                            color: micWindow.textDim
-                        }
-                        ComboBox {
-                            id: afxModeCombo
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: 26
-                            font.pixelSize: 10
-                            model: [
-                                { value: "denoiser", label: "Noise Removal" },
-                                { value: "denoiser_v2", label: "BNR 2.0 (Enhanced)" },
-                                { value: "dereverb", label: "Room Echo Removal" },
-                                { value: "dereverb_denoiser", label: "Noise + Room Echo" },
-                                { value: "studio_voice_low_latency", label: "Studio Voice" }
-                            ]
-                            textRole: "label"
-                            valueRole: "value"
-                            onActivated: function(index) {
-                                if (!micWindow._loading && typeof PulseForge !== "undefined") PulseForge.setAfxEffectMode(currentValue)
-                            }
-                            function indexOfValue(val) {
-                                for (var i = 0; i < count; i++) { if (model[i].value === val) return i }
-                                return 0
-                            }
-                        }
-                    }
-
-                    ProcessingCard {
-                        id: afxCard
-                        title: "AFX Intensity"
-                        Layout.fillWidth: true
-                        sliderLabel: "Intensity"
-                        sliderValue: 70
-                        sliderUnit: "%"
-                        sliderMin: 0
-                        sliderMax: 100
-                        onSliderMoved: function(value) {
-                            if (!micWindow._loading && typeof PulseForge !== "undefined") PulseForge.setAfxIntensity(value / 100.0)
-                        }
-                    }
-                }
-            }
-
-            // ═══ DeepVQE-S AI Denoise (Sonar model) ═══
-            Rectangle {
-                Layout.fillWidth: true
+                visible: micWindow.micTab === 0
                 radius: 8
                 color: micWindow.bgCard
                 border.width: 1
@@ -481,7 +395,7 @@ Window {
                         spacing: 6
 
                         Text {
-                            text: "🧠 AI Denoise — Sonar DeepVQE-S"
+                            text: "🧠 AI Denoise — DeepVQE"
                             font.pixelSize: 12
                             font.bold: true
                             color: micWindow.textDim
@@ -541,9 +455,10 @@ Window {
                 }
             }
 
-            // ═══ Adaptive Ambient NR (Sonar-inspired) ═══
+            // ═══ Adaptive Ambient NR ═══
             Rectangle {
                 Layout.fillWidth: true
+                visible: micWindow.micTab === 1
                 radius: 8
                 color: micWindow.bgCard
                 border.width: 1
@@ -603,6 +518,7 @@ Window {
             // ═══ High-pass + Limiter (side by side) ═══
             RowLayout {
                 Layout.fillWidth: true
+                visible: micWindow.micTab === 1
                 spacing: 8
                 Layout.minimumHeight: Math.max(hpfCard.implicitHeight, limCard.implicitHeight)
 
@@ -646,6 +562,7 @@ Window {
             // ═══ Multiband Compressor toggle ═══
             Rectangle {
                 Layout.fillWidth: true
+                visible: micWindow.micTab === 1
                 radius: 8
                 color: micWindow.bgCard
                 border.width: 1
@@ -687,6 +604,7 @@ Window {
             // ═══ Gate auto-threshold toggle ═══
             Rectangle {
                 Layout.fillWidth: true
+                visible: micWindow.micTab === 1
                 radius: 8
                 color: micWindow.bgCard
                 border.width: 1
@@ -728,6 +646,7 @@ Window {
             // ═══ Gate + Compressor (side by side, equal height) ═══
             RowLayout {
                 Layout.fillWidth: true
+                visible: micWindow.micTab === 0
                 spacing: 8
                 // Both cards fill to the tallest card's height
                 Layout.minimumHeight: Math.max(gateCard.implicitHeight, compCard.implicitHeight)
