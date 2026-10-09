@@ -669,6 +669,20 @@ class WebServer:
             bridge.setAfxIntensity(intensity)
             return {"status": "ok"}
 
+        # ─── DeepVQE-S AI Denoiser ───
+        if path == "/api/mic/deepvqe/status" and method == "GET":
+            return bridge.getDeepvqeStatus()
+
+        if path == "/api/mic/deepvqe/enabled" and method == "POST":
+            enabled = params.get("enabled", "false").lower() == "true"
+            bridge.setDeepvqeEnabled(enabled)
+            return {"status": "ok"}
+
+        if path == "/api/mic/deepvqe/strength" and method == "POST":
+            strength = float(params.get("strength", 0.7))
+            bridge.setDeepvqeStrength(strength)
+            return {"status": "ok"}
+
         # ─── Gate ───
         if path == "/api/mic/gate/enabled" and method == "POST":
             enabled = params.get("enabled", "false").lower() == "true"

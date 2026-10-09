@@ -57,6 +57,12 @@ Window {
         afxModeCombo.currentIndex = afxModeCombo.indexOfValue(afx.effect_mode || "denoiser")
         afxStatusText.text = afx.available ? "RTX GPU — Active" : "No RTX GPU detected"
         afxStatusText.color = afx.available ? micWindow.streamGreen : "#aa4444"
+        // DeepVQE-S AI denoise
+        var dv = s.deepvqe || {}
+        dvEnableCheckbox.checked = dv.enabled
+        dvCard.sliderValue = dv.strength || 70
+        dvStatusText.text = dv.available ? "AI model loaded" : "Model unavailable"
+        dvStatusText.color = dv.available ? micWindow.streamGreen : "#aa4444"
         // Compressor
         compCard.cardEnabled = s.compressor.enabled
         compCard.sliderValue = s.compressor.threshold
@@ -438,6 +444,86 @@ Window {
                         sliderMax: 100
                         onSliderMoved: function(value) {
                             if (!micWindow._loading && typeof PulseForge !== "undefined") PulseForge.setAfxIntensity(value / 100.0)
+                        }
+                    }
+                }
+            }
+
+            // ═══ DeepVQE-S AI Denoise (Sonar model) ═══
+            Rectangle {
+                Layout.fillWidth: true
+                radius: 8
+                color: micWindow.bgCard
+                border.width: 1
+                border.color: micWindow.borderColor
+                implicitHeight: dvColumn.implicitHeight + 20
+
+                ColumnLayout {
+                    id: dvColumn
+                    anchors.fill: parent
+                    anchors.margins: 10
+                    spacing: 6
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 6
+
+                        Text {
+                            text: "🧠 AI Denoise — Sonar DeepVQE-S"
+                            font.pixelSize: 12
+                            font.bold: true
+                            color: micWindow.textDim
+                            Layout.fillWidth: true
+                        }
+                        Text {
+                            id: dvStatusText
+                            text: "Checking..."
+                            font.pixelSize: 10
+                            color: micWindow.textDim
+                        }
+                        Rectangle {
+                            id: dvEnableCheckbox
+                            width: 16; height: 16
+                            radius: 3
+                            color: checked ? micWindow.accent : micWindow.bgDark
+                            border.width: 1
+                            border.color: checked ? micWindow.accent : micWindow.borderColor
+                            property bool checked: false
+                            Text {
+                                anchors.centerIn: parent
+                                text: "✓"
+                                font.pixelSize: 11
+                                font.bold: true
+                                color: "white"
+                                visible: parent.checked
+                            }
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    parent.checked = !parent.checked
+                                    if (!micWindow._loading && typeof PulseForge !== "undefined") PulseForge.setDeepvqeEnabled(parent.checked)
+                                }
+                            }
+                        }
+                        Text {
+                            text: "Enable"
+                            font.pixelSize: 10
+                            color: micWindow.textColor
+                        }
+                    }
+
+                    ProcessingCard {
+                        id: dvCard
+                        title: "AI Strength"
+                        Layout.fillWidth: true
+                        sliderLabel: "Strength"
+                        sliderValue: 70
+                        sliderUnit: "%"
+                        sliderMin: 0
+                        sliderMax: 100
+                        onSliderMoved: function(value) {
+                            if (!micWindow._loading && typeof PulseForge !== "undefined") PulseForge.setDeepvqeStrength(value / 100.0)
                         }
                     }
                 }

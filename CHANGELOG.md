@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **AI Denoise (Sonar DeepVQE-S)** — the SteelSeries Sonar noise-cancellation neural
+  model (Microsoft DeepVQE-S, ONNX) runs natively in the mic chain as an optional
+  denoiser, independent of NVIDIA AFX and usable on any GPU/CPU. Includes a
+  **Strength** dry/wet slider in both the Qt mic window and the web panel
+  (`/api/mic/deepvqe/status|enabled|strength`). Offline validation on real speech:
+  ~9 dB SNR improvement, ~0.75 ms/frame on CPU. Toggle + strength persist to config
+  (`mic.deepvqe`). The ONNX graph was reverse-engineered from the Sonar audio driver
+  (`Sonar.APO.dll`) — see `docs/deepvqe.md`.
 - **Aux In selector** — pick a second external input device in the header and it is looped
   straight into the Aux channel (module-loopback → `pulseforge_aux`), so any line-in/interface
   can join the mix. Persisted as `devices.aux_input`, restored on startup, never stacks

@@ -28,6 +28,7 @@ DEFAULT_CONFIG = {
         "gate":      {"threshold": -50.0, "enabled": True, "attack": 25.0, "hold": 300.0, "release": 200.0, "range": -25.0},
         "eq":        {"enabled": True, "bands": []},  # populated from preset
         "afx":       {"enabled": True, "effect_mode": "denoiser", "intensity": 0.7, "sdk_root": None},
+        "deepvqe":   {"enabled": False, "strength": 0.7},  # Sonar AI denoiser (ONNX)
         "compressor": {"threshold": -20.0, "amount": 3.0, "enabled": True, "attack": 3.0, "release": 250.0, "makeup": 0.0},
     },
     "stream": {

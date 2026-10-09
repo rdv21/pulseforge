@@ -407,6 +407,13 @@ class PulseForgeBridge(QObject):
         afx.set_intensity(afx_cfg.get("intensity", 0.7))
         afx.set_enabled(afx_cfg.get("enabled", True))
 
+        # Apply DeepVQE-S AI denoiser settings
+        dv_cfg = cfg.get("deepvqe", {})
+        self._mic_chain.set_deepvqe(
+            strength=dv_cfg.get("strength", 0.7),
+            enabled=dv_cfg.get("enabled", False),
+        )
+
         comp_cfg = cfg.get("compressor", {})
         self._mic_chain.set_compressor(
             threshold_db=comp_cfg.get("threshold", -20.0),
@@ -1073,6 +1080,34 @@ class PulseForgeBridge(QObject):
         config.save_config(self._config)
         self.statusMessage.emit(f"AFX {'enabled' if enabled else 'disabled'}")
 
+    # ─── DeepVQE-S AI Denoiser Slots ───
+
+    @Slot(result='QVariant')
+    def getDeepvqeStatus(self):
+        """Return DeepVQE-S availability and current settings for QML."""
+        dv = self._mic_chain._deepvqe
+        dv_cfg = self._config.get("mic", {}).get("deepvqe", {})
+        return {
+            "available": dv.available,
+            "enabled": dv_cfg.get("enabled", False),
+            "strength": int(dv_cfg.get("strength", 0.7) * 100),
+        }
+
+    @Slot(float)
+    def setDeepvqeStrength(self, strength: float):
+        """Set DeepVQE-S strength (0.0-1.0 from QML slider)."""
+        self._mic_chain.set_deepvqe(strength=max(0.0, min(1.0, strength)))
+        self._config.setdefault("mic", {}).setdefault("deepvqe", {})["strength"] = strength
+        config.save_config(self._config)
+
+    @Slot(bool)
+    def setDeepvqeEnabled(self, enabled: bool):
+        """Toggle the DeepVQE-S AI denoiser on/off."""
+        self._mic_chain.set_deepvqe(enabled=enabled)
+        self._config.setdefault("mic", {}).setdefault("deepvqe", {})["enabled"] = enabled
+        config.save_config(self._config)
+        self.statusMessage.emit(f"AI Denoise {'enabled' if enabled else 'disabled'}")
+
     @Slot(float)
     def setCompThreshold(self, threshold_db: float):
         self._mic_chain.set_compressor(threshold_db=threshold_db)
@@ -1176,6 +1211,11 @@ class PulseForgeBridge(QObject):
                 "enabled": mic.get("afx", {}).get("enabled", True),
                 "effect_mode": mic.get("afx", {}).get("effect_mode", "denoiser"),
                 "intensity": int(mic.get("afx", {}).get("intensity", 0.7) * 100),
+            },
+            "deepvqe": {
+                "available": self._mic_chain._deepvqe.available,
+                "enabled": mic.get("deepvqe", {}).get("enabled", False),
+                "strength": int(mic.get("deepvqe", {}).get("strength", 0.7) * 100),
             },
             "compressor": {
                 "enabled": mic.get("compressor", {}).get("enabled", True),

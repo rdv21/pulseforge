@@ -18,6 +18,7 @@ from typing import Optional
 
 from . import dsp
 from . import pipewire_ctl as pw
+from .deepvqe import DeepVQEDenoiser
 from .process_manager import get_manager
 
 # Audio settings
@@ -109,14 +110,18 @@ class NativeMicChain:
             block_size=BUFFER_SAMPLES,
         )
 
-        # NVIDIA AFX — the only noise processor
+        # NVIDIA AFX — RTX Voice denoiser (optional; needs the NVIDIA SDK)
         self._afx = dsp.AFXNoiseProcessor(
             effect_mode='denoiser_v2',
             intensity=0.7,
             enabled=True,
             frame_samples=BUFFER_SAMPLES,
         )
-        self.noise = self._afx
+
+        # DeepVQE-S — Sonar's AI speech denoiser (ONNX, runs on CPU/GPU).
+        # Independent of AFX; either, both, or neither can be enabled.
+        self._deepvqe = DeepVQEDenoiser(strength=0.7, enabled=False)
+
         self.compressor = dsp.CompressorProcessor()
 
         self._capture_proc = None
@@ -298,9 +303,13 @@ class NativeMicChain:
 
         # Destroy C state after thread is fully stopped
         try:
-            self.noise.destroy()
+            self._afx.destroy()
         except Exception as e:
             print(f"  NativeMicChain: noise destroy error: {e}")
+        try:
+            self._deepvqe.destroy()
+        except Exception as e:
+            print(f"  NativeMicChain: deepvqe destroy error: {e}")
 
         print("  NativeMicChain: stopped")
 
@@ -531,7 +540,12 @@ class NativeMicChain:
                 if not np.all(np.isfinite(block)):
                     block = np.zeros_like(block)
 
-                block = self.noise.process(block)
+                block = self._afx.process(block)
+                if not np.all(np.isfinite(block)):
+                    block = np.zeros_like(block)
+
+                # AI denoise (DeepVQE-S) — after AFX, before EQ
+                block = self._deepvqe.process(block)
                 if not np.all(np.isfinite(block)):
                     block = np.zeros_like(block)
 
@@ -733,11 +747,20 @@ class NativeMicChain:
             self.eq.set_band(i, b['freq'], b['gain'], b['q'])
 
     def set_noise(self, intensity: float = None, enabled: bool = None):
+        """Back-compat shim — routes to the AFX processor."""
         if intensity is not None:
-            # AFX uses 0.0-1.0 intensity scale
-            self.noise.set_intensity(max(0.0, min(1.0, intensity / 100.0)))
+            self._afx.set_intensity(max(0.0, min(1.0, intensity / 100.0)))
         if enabled is not None:
-            self.noise.set_enabled(enabled)
+            self._afx.set_enabled(enabled)
+
+    # ─── DeepVQE-S AI denoiser ────────────────────────────────────
+
+    def set_deepvqe(self, strength: float = None, enabled: bool = None):
+        """Set AI denoiser strength (0.0-1.0) and/or enable state."""
+        if strength is not None:
+            self._deepvqe.set_strength(max(0.0, min(1.0, strength)))
+        if enabled is not None:
+            self._deepvqe.set_enabled(enabled)
 
     def set_input_device(self, source_name: str = None):
         """Set the configured input device and redirect capture to it."""

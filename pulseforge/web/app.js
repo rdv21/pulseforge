@@ -694,6 +694,23 @@
             document.getElementById("afx-intensity-val").textContent = intensitySlider.value + "%";
         });
 
+        // DeepVQE-S AI denoise
+        let dv = {};
+        try { dv = await apiGet("mic/deepvqe/status"); } catch (e) { dv = {}; }
+        const dvEnabled = document.getElementById("deepvqe-enabled");
+        dvEnabled.checked = dv.enabled || false;
+        dvEnabled.addEventListener("change", (e) => {
+            apiPost("mic/deepvqe/enabled", { enabled: e.target.checked ? "true" : "false" });
+        });
+        const dvStrength = document.getElementById("deepvqe-strength");
+        dvStrength.value = dv.strength || 70;
+        document.getElementById("deepvqe-strength-val").textContent = dvStrength.value + "%";
+        dvStrength.addEventListener("change", () => {
+            const v = parseFloat(dvStrength.value) / 100;
+            apiPost("mic/deepvqe/strength", { strength: v });
+            document.getElementById("deepvqe-strength-val").textContent = dvStrength.value + "%";
+        });
+
         // Gate
         const gate = state.micSettings.gate || {};
         const setGate = (id, val, suffix) => {
