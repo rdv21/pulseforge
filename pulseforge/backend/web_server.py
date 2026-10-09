@@ -699,6 +699,55 @@ class WebServer:
             bridge.setGateRange(value)
             return {"status": "ok"}
 
+        if path == "/api/mic/gate/auto_threshold" and method == "POST":
+            auto = params.get("auto", "false").lower() == "true"
+            bridge.setGateAutoThreshold(auto)
+            return {"status": "ok"}
+
+        if path == "/api/mic/gate/offset" and method == "POST":
+            value = float(params.get("value", 12))
+            bridge.setGateOffset(value)
+            return {"status": "ok"}
+
+        # ─── High-pass filter ───
+        if path == "/api/mic/hpf/enabled" and method == "POST":
+            enabled = params.get("enabled", "false").lower() == "true"
+            bridge.setHpfEnabled(enabled)
+            return {"status": "ok"}
+
+        if path == "/api/mic/hpf/freq" and method == "POST":
+            value = float(params.get("value", 90))
+            bridge.setHpfFreq(value)
+            return {"status": "ok"}
+
+        # ─── Adaptive ambient NR ───
+        if path == "/api/mic/ambient_nr/enabled" and method == "POST":
+            enabled = params.get("enabled", "false").lower() == "true"
+            bridge.setAmbientNrEnabled(enabled)
+            return {"status": "ok"}
+
+        if path == "/api/mic/ambient_nr/level" and method == "POST":
+            value = float(params.get("level", 0.4))
+            bridge.setAmbientNrLevel(value)
+            return {"status": "ok"}
+
+        # ─── Multiband compressor ───
+        if path == "/api/mic/mbcomp/enabled" and method == "POST":
+            enabled = params.get("enabled", "false").lower() == "true"
+            bridge.setMbCompEnabled(enabled)
+            return {"status": "ok"}
+
+        # ─── Output limiter ───
+        if path == "/api/mic/limiter/enabled" and method == "POST":
+            enabled = params.get("enabled", "false").lower() == "true"
+            bridge.setLimiterEnabled(enabled)
+            return {"status": "ok"}
+
+        if path == "/api/mic/limiter/ceiling" and method == "POST":
+            value = float(params.get("value", -1.0))
+            bridge.setLimiterCeiling(value)
+            return {"status": "ok"}
+
         if path == "/api/mic/gate/attack" and method == "POST":
             value = float(params.get("value", 25))
             bridge.setGateAttack(value)

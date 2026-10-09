@@ -711,6 +711,55 @@
             document.getElementById("deepvqe-strength-val").textContent = dvStrength.value + "%";
         });
 
+        // Adaptive ambient NR
+        const anr = state.micSettings.ambient_nr || {};
+        document.getElementById("ambient-enabled").checked = anr.enabled !== false;
+        document.getElementById("ambient-enabled").addEventListener("change", (e) => {
+            apiPost("mic/ambient_nr/enabled", { enabled: e.target.checked ? "true" : "false" });
+        });
+        const anrLevel = document.getElementById("ambient-level");
+        anrLevel.value = anr.level != null ? anr.level : 40;
+        document.getElementById("ambient-level-val").textContent = anrLevel.value + "%";
+        anrLevel.addEventListener("change", () => {
+            apiPost("mic/ambient_nr/level", { level: parseFloat(anrLevel.value) / 100 });
+            document.getElementById("ambient-level-val").textContent = anrLevel.value + "%";
+        });
+
+        // High-pass filter
+        const hpf = state.micSettings.hpf || {};
+        document.getElementById("hpf-enabled").checked = hpf.enabled !== false;
+        document.getElementById("hpf-enabled").addEventListener("change", (e) => {
+            apiPost("mic/hpf/enabled", { enabled: e.target.checked ? "true" : "false" });
+        });
+        const hpfFreq = document.getElementById("hpf-freq");
+        hpfFreq.value = hpf.freq || 90;
+        document.getElementById("hpf-freq-val").textContent = hpfFreq.value + " Hz";
+        hpfFreq.addEventListener("change", () => {
+            apiPost("mic/hpf/freq", { value: parseFloat(hpfFreq.value) });
+            document.getElementById("hpf-freq-val").textContent = hpfFreq.value + " Hz";
+        });
+
+        // Multiband compressor
+        const mbc = state.micSettings.mbcomp || {};
+        document.getElementById("mbcomp-enabled").checked = mbc.enabled !== false;
+        document.getElementById("mbcomp-enabled").addEventListener("change", (e) => {
+            apiPost("mic/mbcomp/enabled", { enabled: e.target.checked ? "true" : "false" });
+        });
+
+        // Output limiter
+        const lim = state.micSettings.limiter || {};
+        document.getElementById("limiter-enabled").checked = lim.enabled !== false;
+        document.getElementById("limiter-enabled").addEventListener("change", (e) => {
+            apiPost("mic/limiter/enabled", { enabled: e.target.checked ? "true" : "false" });
+        });
+        const limCeil = document.getElementById("limiter-ceiling");
+        limCeil.value = lim.ceiling != null ? lim.ceiling : -1;
+        document.getElementById("limiter-ceiling-val").textContent = limCeil.value + " dB";
+        limCeil.addEventListener("change", () => {
+            apiPost("mic/limiter/ceiling", { value: parseFloat(limCeil.value) });
+            document.getElementById("limiter-ceiling-val").textContent = limCeil.value + " dB";
+        });
+
         // Gate
         const gate = state.micSettings.gate || {};
         const setGate = (id, val, suffix) => {

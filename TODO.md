@@ -42,6 +42,24 @@
 
 ## Core PulseForge
 
+### Mic Processing (Sonar-inspired)
+- [x] AI denoise (Sonar DeepVQE-S ONNX model) with strength slider
+- [x] Chain reorder: denoise → NR → gate (Sonar gates post-NR)
+- [x] Adaptive ambient NR (FFT spectral subtraction, room tone)
+- [x] High-pass filter (rumble/plosives, ~90 Hz)
+- [x] Multiband compressor (4-band Linkwitz-Riley crossovers)
+- [x] Output limiter (-1 dB ceiling)
+- [x] Auto-threshold noise gate (tracks noise floor + offset)
+- [ ] **AEC (Acoustic Echo Cancellation)** — Sonar's first stage. Cancel speaker
+  output from the mic so callers don't hear your game/media. Needs a reference
+  signal per render bus (loopback each group sink and feed as the AEC reference).
+  Largest remaining gap vs Sonar; separate project. (~Sonar `AECState` +
+  `AECChatRenderDeviceId`/`AECGameDeviceId`/`AECMediaDeviceId`.)
+- [ ] Impact/click noise reduction (keyboard/desk transients) — Sonar `ImpactNoiseReduction`
+- [ ] De-esser / Clarity (sibilance) — Sonar `Clarity`
+- [ ] EQ filter types: add shelf + HP/LP, extend to 10 bands — Sonar `ParametricEqFilter1..10`
+- [ ] Run DeepVQE on its native 512-hop / seq-2 framing (~1-2 dB more, fewer artifacts)
+
 ### Needs Work
 - [ ] Stale system install (`/usr/lib/python3.14/site-packages/pulseforge/`, `/usr/bin/pulseforge`,
   system `.desktop` + icons) — **deferred: needs sudo**. Repo is now the source of truth, so this

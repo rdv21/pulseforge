@@ -393,6 +393,8 @@ class PulseForgeBridge(QObject):
             hold_ms=gate_cfg.get("hold", 300.0),
             release_ms=gate_cfg.get("release", 200.0),
             range_db=gate_cfg.get("range", -25.0),
+            auto_threshold=gate_cfg.get("auto_threshold", False),
+            offset_db=gate_cfg.get("offset", 12.0),
         )
 
         eq_cfg = cfg.get("eq", {})
@@ -412,6 +414,26 @@ class PulseForgeBridge(QObject):
         self._mic_chain.set_deepvqe(
             strength=dv_cfg.get("strength", 0.7),
             enabled=dv_cfg.get("enabled", False),
+        )
+
+        # Adaptive ambient NR
+        anr_cfg = cfg.get("ambient_nr", {})
+        self._mic_chain.set_ambient_nr(
+            level=anr_cfg.get("level", 0.4),
+            enabled=anr_cfg.get("enabled", True),
+        )
+        # High-pass filter
+        hpf_cfg = cfg.get("hpf", {})
+        self._mic_chain.set_hpf(
+            freq=hpf_cfg.get("freq", 90.0),
+            enabled=hpf_cfg.get("enabled", True),
+        )
+        # Multiband compressor + limiter
+        self._mic_chain.set_mb_compressor(enabled=cfg.get("mbcomp", {}).get("enabled", True))
+        lim_cfg = cfg.get("limiter", {})
+        self._mic_chain.set_limiter(
+            ceiling_db=lim_cfg.get("ceiling", -1.0),
+            enabled=lim_cfg.get("enabled", True),
         )
 
         comp_cfg = cfg.get("compressor", {})
@@ -1108,6 +1130,63 @@ class PulseForgeBridge(QObject):
         config.save_config(self._config)
         self.statusMessage.emit(f"AI Denoise {'enabled' if enabled else 'disabled'}")
 
+    @Slot(bool)
+    def setGateAutoThreshold(self, auto: bool):
+        self._mic_chain.set_gate(auto_threshold=auto)
+        self._config["mic"]["gate"]["auto_threshold"] = auto
+        config.save_config(self._config)
+
+    @Slot(float)
+    def setGateOffset(self, offset_db: float):
+        self._mic_chain.set_gate(offset_db=offset_db)
+        self._config["mic"]["gate"]["offset"] = offset_db
+        config.save_config(self._config)
+
+    # ─── High-pass / Ambient NR / Multiband comp / Limiter ───
+
+    @Slot(bool)
+    def setHpfEnabled(self, enabled: bool):
+        self._mic_chain.set_hpf(enabled=enabled)
+        self._config.setdefault("mic", {}).setdefault("hpf", {})["enabled"] = enabled
+        config.save_config(self._config)
+
+    @Slot(float)
+    def setHpfFreq(self, freq: float):
+        self._mic_chain.set_hpf(freq=freq)
+        self._config.setdefault("mic", {}).setdefault("hpf", {})["freq"] = freq
+        config.save_config(self._config)
+
+    @Slot(bool)
+    def setAmbientNrEnabled(self, enabled: bool):
+        self._mic_chain.set_ambient_nr(enabled=enabled)
+        self._config.setdefault("mic", {}).setdefault("ambient_nr", {})["enabled"] = enabled
+        config.save_config(self._config)
+
+    @Slot(float)
+    def setAmbientNrLevel(self, level: float):
+        self._mic_chain.set_ambient_nr(level=max(0.0, min(1.0, level)))
+        self._config.setdefault("mic", {}).setdefault("ambient_nr", {})["level"] = level
+        config.save_config(self._config)
+
+    @Slot(bool)
+    def setMbCompEnabled(self, enabled: bool):
+        self._mic_chain.set_mb_compressor(enabled=enabled)
+        self._config.setdefault("mic", {}).setdefault("mbcomp", {})["enabled"] = enabled
+        config.save_config(self._config)
+        self.statusMessage.emit(f"Multiband comp {'on' if enabled else 'off'}")
+
+    @Slot(bool)
+    def setLimiterEnabled(self, enabled: bool):
+        self._mic_chain.set_limiter(enabled=enabled)
+        self._config.setdefault("mic", {}).setdefault("limiter", {})["enabled"] = enabled
+        config.save_config(self._config)
+
+    @Slot(float)
+    def setLimiterCeiling(self, ceiling_db: float):
+        self._mic_chain.set_limiter(ceiling_db=ceiling_db)
+        self._config.setdefault("mic", {}).setdefault("limiter", {})["ceiling"] = ceiling_db
+        config.save_config(self._config)
+
     @Slot(float)
     def setCompThreshold(self, threshold_db: float):
         self._mic_chain.set_compressor(threshold_db=threshold_db)
@@ -1205,6 +1284,8 @@ class PulseForgeBridge(QObject):
                 "hold": mic.get("gate", {}).get("hold", 300.0),
                 "release": mic.get("gate", {}).get("release", 200.0),
                 "range": mic.get("gate", {}).get("range", -25.0),
+                "auto_threshold": mic.get("gate", {}).get("auto_threshold", False),
+                "offset": mic.get("gate", {}).get("offset", 12.0),
             },
             "afx": {
                 "available": self._mic_chain._afx.available,
@@ -1216,6 +1297,21 @@ class PulseForgeBridge(QObject):
                 "available": self._mic_chain._deepvqe.available,
                 "enabled": mic.get("deepvqe", {}).get("enabled", False),
                 "strength": int(mic.get("deepvqe", {}).get("strength", 0.7) * 100),
+            },
+            "hpf": {
+                "enabled": mic.get("hpf", {}).get("enabled", True),
+                "freq": mic.get("hpf", {}).get("freq", 90.0),
+            },
+            "ambient_nr": {
+                "enabled": mic.get("ambient_nr", {}).get("enabled", True),
+                "level": int(mic.get("ambient_nr", {}).get("level", 0.4) * 100),
+            },
+            "mbcomp": {
+                "enabled": mic.get("mbcomp", {}).get("enabled", True),
+            },
+            "limiter": {
+                "enabled": mic.get("limiter", {}).get("enabled", True),
+                "ceiling": mic.get("limiter", {}).get("ceiling", -1.0),
             },
             "compressor": {
                 "enabled": mic.get("compressor", {}).get("enabled", True),

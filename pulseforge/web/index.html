@@ -203,6 +203,53 @@
             </div>
         </div>
 
+        <!-- Adaptive Ambient NR -->
+        <div class="mic-section">
+            <div class="mic-section-header">
+                <div class="mic-section-title">Ambient NR (room tone)</div>
+                <label class="toggle"><input type="checkbox" id="ambient-enabled"><span class="toggle-switch"></span></label>
+            </div>
+            <div class="param-row">
+                <span class="param-label">Amount</span>
+                <input type="range" id="ambient-level" min="0" max="100" value="40">
+                <span class="param-value" id="ambient-level-val">40%</span>
+            </div>
+        </div>
+
+        <!-- High-pass -->
+        <div class="mic-section">
+            <div class="mic-section-header">
+                <div class="mic-section-title">High-Pass Filter</div>
+                <label class="toggle"><input type="checkbox" id="hpf-enabled"><span class="toggle-switch"></span></label>
+            </div>
+            <div class="param-row">
+                <span class="param-label">Freq</span>
+                <input type="range" id="hpf-freq" min="20" max="300" step="1" value="90">
+                <span class="param-value" id="hpf-freq-val">90 Hz</span>
+            </div>
+        </div>
+
+        <!-- Multiband compressor -->
+        <div class="mic-section">
+            <div class="mic-section-header">
+                <div class="mic-section-title">Multiband Compressor (4-band)</div>
+                <label class="toggle"><input type="checkbox" id="mbcomp-enabled"><span class="toggle-switch"></span></label>
+            </div>
+        </div>
+
+        <!-- Limiter -->
+        <div class="mic-section">
+            <div class="mic-section-header">
+                <div class="mic-section-title">Output Limiter</div>
+                <label class="toggle"><input type="checkbox" id="limiter-enabled"><span class="toggle-switch"></span></label>
+            </div>
+            <div class="param-row">
+                <span class="param-label">Ceiling</span>
+                <input type="range" id="limiter-ceiling" min="-12" max="0" step="1" value="-1">
+                <span class="param-value" id="limiter-ceiling-val">-1 dB</span>
+            </div>
+        </div>
+
         <!-- Gate -->
         <div class="mic-section">
             <div class="mic-section-header">

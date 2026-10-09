@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Sonar-inspired mic chain upgrade** — the mic chain is reordered and extended to
+  match SteelSeries Sonar's design: **AI denoise → adaptive NR → gate → HPF → EQ →
+  multiband comp → limiter**. New stages, each toggleable with its setting persisted:
+  - **Adaptive ambient NR** — FFT spectral subtraction with a slow noise-floor tracker
+    (steady room tone: fans, AC, hiss). Sonar `CaptureAmbientNoiseReduction`-style.
+  - **High-pass filter** — ~90 Hz, removes rumble/plosives/handling noise.
+  - **Multiband compressor** — 4 bands via Linkwitz-Riley 4th-order crossovers;
+    the single-band `CompressorProcessor` is retained as the fallback engine.
+  - **Output limiter** — −1 dBFS ceiling, catches compressor makeup + EQ boosts.
+  - **Auto-threshold noise gate** — tracks the noise floor + offset (Sonar
+    `NoiseGateAutoThreshold`), alongside the existing manual threshold.
+  - Gate now runs **after** denoise (Sonar gates post-NR, not the raw signal).
 - **AI Denoise (Sonar DeepVQE-S)** — the SteelSeries Sonar noise-cancellation neural
   model (Microsoft DeepVQE-S, ONNX) runs natively in the mic chain as an optional
   denoiser, independent of NVIDIA AFX and usable on any GPU/CPU. Includes a

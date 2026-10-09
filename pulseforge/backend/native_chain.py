@@ -122,7 +122,20 @@ class NativeMicChain:
         # Independent of AFX; either, both, or neither can be enabled.
         self._deepvqe = DeepVQEDenoiser(strength=0.7, enabled=False)
 
+        # Adaptive ambient NR (FFT spectral subtraction) — steady room tone.
+        self.ambient_nr = dsp.AmbientNoiseReduction(level=0.4, enabled=True)
+
+        # High-pass filter — removes rumble/plosives/handling (Sonar has one).
+        self.hpf = dsp.BiquadHighPass(freq=90.0, q=0.707)
+        self._hpf_enabled = True
+
+        # Compression: multiband (preferred, Sonar-style) with the single-band
+        # CompressorProcessor kept as the fallback engine (used per-band too).
+        self.mb_compressor = dsp.MultibandCompressor(enabled=True)
         self.compressor = dsp.CompressorProcessor()
+
+        # Output limiter — catches compressor makeup + EQ boosts (Sonar has one).
+        self.limiter = dsp.LimiterProcessor(ceiling_db=-1.0, enabled=True)
 
         self._capture_proc = None
         self._playback_proc = None
@@ -535,8 +548,9 @@ class NativeMicChain:
                 if CHANNELS == 1:
                     block = block.squeeze()  # (480,) 1D array
 
-                # Process: gate → AFX → EQ → compressor
-                block = self.gate.process(block)
+                # ── Processing chain (Sonar-inspired order) ──
+                # AI denoise → adaptive NR → gate → HPF → EQ → comp → limiter
+                block = self._deepvqe.process(block)
                 if not np.all(np.isfinite(block)):
                     block = np.zeros_like(block)
 
@@ -544,16 +558,36 @@ class NativeMicChain:
                 if not np.all(np.isfinite(block)):
                     block = np.zeros_like(block)
 
-                # AI denoise (DeepVQE-S) — after AFX, before EQ
-                block = self._deepvqe.process(block)
+                # adaptive ambient NR (steady room tone / hiss)
+                block = self.ambient_nr.process(block)
                 if not np.all(np.isfinite(block)):
                     block = np.zeros_like(block)
+
+                # gate AFTER denoise (Sonar gates post-NR, not pre-signal)
+                block = self.gate.process(block)
+                if not np.all(np.isfinite(block)):
+                    block = np.zeros_like(block)
+
+                # high-pass filter (rumble / plosives)
+                if self._hpf_enabled:
+                    block = self.hpf.process(block)
+                    if not np.all(np.isfinite(block)):
+                        block = np.zeros_like(block)
 
                 block = self.eq.process(block)
                 if not np.all(np.isfinite(block)):
                     block = np.zeros_like(block)
 
-                block = self.compressor.process(block)
+                # compression — multiband preferred, single-band fallback
+                if self.mb_compressor.enabled:
+                    block = self.mb_compressor.process(block)
+                else:
+                    block = self.compressor.process(block)
+                if not np.all(np.isfinite(block)):
+                    block = np.zeros_like(block)
+
+                # output limiter (last line of defence before output)
+                block = self.limiter.process(block)
                 if not np.all(np.isfinite(block)):
                     block = np.zeros_like(block)
 
@@ -720,7 +754,8 @@ class NativeMicChain:
 
     def set_gate(self, threshold_db: float = None, enabled: bool = None,
                  attack_ms: float = None, hold_ms: float = None,
-                 release_ms: float = None, range_db: float = None):
+                 release_ms: float = None, range_db: float = None,
+                 auto_threshold: bool = None, offset_db: float = None):
         if threshold_db is not None:
             self.gate.set_threshold(threshold_db)
         if enabled is not None:
@@ -733,6 +768,10 @@ class NativeMicChain:
             self.gate.set_release(release_ms)
         if range_db is not None:
             self.gate.set_range(range_db)
+        if auto_threshold is not None:
+            self.gate.set_auto_threshold(auto_threshold)
+        if offset_db is not None:
+            self.gate.set_offset_db(offset_db)
 
     def set_eq_band(self, idx: int, freq: float, gain_db: float, q: float):
         self.eq.set_band(idx, freq, gain_db, q)
@@ -767,6 +806,27 @@ class NativeMicChain:
         self._configured_input_device = source_name
         if source_name:
             self.redirect_capture(source_name)
+
+    # ─── High-pass filter / ambient NR / multiband comp / limiter ──
+
+    def set_hpf(self, freq: float = None, enabled: bool = None):
+        if freq is not None:
+            self.hpf.set_freq(freq)
+        if enabled is not None:
+            self._hpf_enabled = bool(enabled)
+
+    def set_ambient_nr(self, level: float = None, enabled: bool = None):
+        self.ambient_nr.set_params(level=level, enabled=enabled)
+
+    def set_mb_compressor(self, enabled: bool = None):
+        if enabled is not None:
+            self.mb_compressor.set_enabled(enabled)
+
+    def set_mb_band(self, idx: int, **kwargs):
+        self.mb_compressor.set_band(idx, **kwargs)
+
+    def set_limiter(self, ceiling_db: float = None, enabled: bool = None):
+        self.limiter.set_params(ceiling_db=ceiling_db, enabled=enabled)
 
     def set_compressor(self, threshold_db: float = None, ratio: float = None,
                        attack_ms: float = None, release_ms: float = None,

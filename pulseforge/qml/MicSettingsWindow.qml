@@ -63,7 +63,19 @@ Window {
         dvCard.sliderValue = dv.strength || 70
         dvStatusText.text = dv.available ? "AI model loaded" : "Model unavailable"
         dvStatusText.color = dv.available ? micWindow.streamGreen : "#aa4444"
-        // Compressor
+        // Chain extras (Sonar-inspired)
+        var hpf = s.hpf || {}
+        hpfCard.cardEnabled = hpf.enabled !== false
+        hpfCard.sliderValue = hpf.freq || 90
+        var anr = s.ambient_nr || {}
+        anrEnableCheckbox.checked = anr.enabled !== false
+        anrCard.sliderValue = anr.level || 40
+        var mbc = s.mbcomp || {}
+        mbEnableCheckbox.checked = mbc.enabled !== false
+        var lim = s.limiter || {}
+        limCard.cardEnabled = lim.enabled !== false
+        limCard.sliderValue = lim.ceiling || -1
+        gateAutoCheckbox.checked = s.gate.auto_threshold === true        // Compressor
         compCard.cardEnabled = s.compressor.enabled
         compCard.sliderValue = s.compressor.threshold
         compCard.secondSliderValue = s.compressor.ratio
@@ -526,6 +538,190 @@ Window {
                             if (!micWindow._loading && typeof PulseForge !== "undefined") PulseForge.setDeepvqeStrength(value / 100.0)
                         }
                     }
+                }
+            }
+
+            // ═══ Adaptive Ambient NR (Sonar-inspired) ═══
+            Rectangle {
+                Layout.fillWidth: true
+                radius: 8
+                color: micWindow.bgCard
+                border.width: 1
+                border.color: micWindow.borderColor
+                implicitHeight: anrColumn.implicitHeight + 20
+                ColumnLayout {
+                    id: anrColumn
+                    anchors.fill: parent
+                    anchors.margins: 10
+                    spacing: 6
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 6
+                        Text {
+                            text: "🌫 Ambient NR — Room Tone"
+                            font.pixelSize: 12
+                            font.bold: true
+                            color: micWindow.textDim
+                            Layout.fillWidth: true
+                        }
+                        Rectangle {
+                            id: anrEnableCheckbox
+                            width: 16; height: 16
+                            radius: 3
+                            color: checked ? micWindow.accent : micWindow.bgDark
+                            border.width: 1
+                            border.color: checked ? micWindow.accent : micWindow.borderColor
+                            property bool checked: true
+                            Text { anchors.centerIn: parent; text: "✓"; font.pixelSize: 11; font.bold: true; color: "white"; visible: parent.checked }
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    parent.checked = !parent.checked
+                                    if (!micWindow._loading && typeof PulseForge !== "undefined") PulseForge.setAmbientNrEnabled(parent.checked)
+                                }
+                            }
+                        }
+                        Text { text: "Enable"; font.pixelSize: 10; color: micWindow.textColor }
+                    }
+                    ProcessingCard {
+                        id: anrCard
+                        title: "NR Amount"
+                        Layout.fillWidth: true
+                        sliderLabel: "Amount"
+                        sliderValue: 40
+                        sliderUnit: "%"
+                        sliderMin: 0
+                        sliderMax: 100
+                        onSliderMoved: function(value) {
+                            if (!micWindow._loading && typeof PulseForge !== "undefined") PulseForge.setAmbientNrLevel(value / 100.0)
+                        }
+                    }
+                }
+            }
+
+            // ═══ High-pass + Limiter (side by side) ═══
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+                Layout.minimumHeight: Math.max(hpfCard.implicitHeight, limCard.implicitHeight)
+
+                ProcessingCard {
+                    id: hpfCard
+                    title: "High-Pass"
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    sliderLabel: "Freq"
+                    sliderValue: 90
+                    sliderUnit: " Hz"
+                    sliderMin: 20
+                    sliderMax: 300
+                    onEnabledToggled: function(enabled) {
+                        if (!micWindow._loading && typeof PulseForge !== "undefined") PulseForge.setHpfEnabled(enabled)
+                    }
+                    onSliderMoved: function(value) {
+                        if (!micWindow._loading && typeof PulseForge !== "undefined") PulseForge.setHpfFreq(value)
+                    }
+                }
+
+                ProcessingCard {
+                    id: limCard
+                    title: "Limiter"
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    sliderLabel: "Ceiling"
+                    sliderValue: -1
+                    sliderUnit: " dB"
+                    sliderMin: -12
+                    sliderMax: 0
+                    onEnabledToggled: function(enabled) {
+                        if (!micWindow._loading && typeof PulseForge !== "undefined") PulseForge.setLimiterEnabled(enabled)
+                    }
+                    onSliderMoved: function(value) {
+                        if (!micWindow._loading && typeof PulseForge !== "undefined") PulseForge.setLimiterCeiling(value)
+                    }
+                }
+            }
+
+            // ═══ Multiband Compressor toggle ═══
+            Rectangle {
+                Layout.fillWidth: true
+                radius: 8
+                color: micWindow.bgCard
+                border.width: 1
+                border.color: micWindow.borderColor
+                implicitHeight: 40
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.margins: 10
+                    spacing: 6
+                    Text {
+                        text: "🎚 Multiband Compressor (4-band)"
+                        font.pixelSize: 12
+                        font.bold: true
+                        color: micWindow.textDim
+                        Layout.fillWidth: true
+                    }
+                    Rectangle {
+                        id: mbEnableCheckbox
+                        width: 16; height: 16
+                        radius: 3
+                        color: checked ? micWindow.accent : micWindow.bgDark
+                        border.width: 1
+                        border.color: checked ? micWindow.accent : micWindow.borderColor
+                        property bool checked: true
+                        Text { anchors.centerIn: parent; text: "✓"; font.pixelSize: 11; font.bold: true; color: "white"; visible: parent.checked }
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                parent.checked = !parent.checked
+                                if (!micWindow._loading && typeof PulseForge !== "undefined") PulseForge.setMbCompEnabled(parent.checked)
+                            }
+                        }
+                    }
+                    Text { text: "Enable"; font.pixelSize: 10; color: micWindow.textColor }
+                }
+            }
+
+            // ═══ Gate auto-threshold toggle ═══
+            Rectangle {
+                Layout.fillWidth: true
+                radius: 8
+                color: micWindow.bgCard
+                border.width: 1
+                border.color: micWindow.borderColor
+                implicitHeight: 40
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.margins: 10
+                    spacing: 6
+                    Text {
+                        text: "🚪 Gate Auto-Threshold (track noise floor)"
+                        font.pixelSize: 12
+                        font.bold: true
+                        color: micWindow.textDim
+                        Layout.fillWidth: true
+                    }
+                    Rectangle {
+                        id: gateAutoCheckbox
+                        width: 16; height: 16
+                        radius: 3
+                        color: checked ? micWindow.accent : micWindow.bgDark
+                        border.width: 1
+                        border.color: checked ? micWindow.accent : micWindow.borderColor
+                        property bool checked: false
+                        Text { anchors.centerIn: parent; text: "✓"; font.pixelSize: 11; font.bold: true; color: "white"; visible: parent.checked }
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                parent.checked = !parent.checked
+                                if (!micWindow._loading && typeof PulseForge !== "undefined") PulseForge.setGateAutoThreshold(parent.checked)
+                            }
+                        }
+                    }
+                    Text { text: "Auto"; font.pixelSize: 10; color: micWindow.textColor }
                 }
             }
 

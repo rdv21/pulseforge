@@ -41,13 +41,19 @@ class GateProcessor:
 
     def __init__(self, threshold_db: float = -35.0, enabled: bool = True,
                  attack_ms: float = 25.0, hold_ms: float = 300.0, release_ms: float = 200.0,
-                 range_db: float = -25.0):
+                 range_db: float = -25.0, auto_threshold: bool = False, offset_db: float = 12.0):
         # RMS-based detection: speech RMS is ~12dB below peak, so lower
         # the RMS threshold by 12dB to match the same perceptual opening point.
         self._rms_offset_db = -12.0
+        self._threshold_db = threshold_db
         self.threshold = _db_to_linear(threshold_db + self._rms_offset_db)
         self._gate_open = False
         self.enabled = enabled
+        # Auto-threshold (Sonar-style): track the noise floor and open at
+        # floor + offset, so the gate adapts to the room/mic without manual tuning.
+        self._auto_threshold = auto_threshold
+        self._offset_db = offset_db
+        self._floor_db = -80.0
         # Range: how much the gate attenuates when closed.
         # -25dB = strong attenuation but not dead silence (natural breath ambience)
         # 0.0 = complete cutoff (unnatural, causes abrupt fadeouts)
@@ -68,7 +74,32 @@ class GateProcessor:
         self._indices = np.arange(480, dtype=np.float32)
 
     def set_threshold(self, threshold_db: float):
+        self._threshold_db = threshold_db
         self.threshold = _db_to_linear(threshold_db + self._rms_offset_db)
+
+    def set_auto_threshold(self, auto: bool):
+        """Enable adaptive noise-floor tracking (threshold = floor + offset)."""
+        self._auto_threshold = bool(auto)
+        if not auto:
+            # revert to the manual threshold
+            self.threshold = _db_to_linear(self._threshold_db + self._rms_offset_db)
+
+    def set_offset_db(self, offset_db: float):
+        """How far above the tracked noise floor the gate opens (dB)."""
+        self._offset_db = float(offset_db)
+
+    def _update_auto_threshold(self, rms: float):
+        """Track the noise floor with fast-down / slow-up asymmetry."""
+        rms_db = 20.0 * np.log10(max(rms, 1e-9))
+        if rms_db < self._floor_db:
+            # signal is quieter than the floor — track down quickly
+            self._floor_db += 0.5 * (rms_db - self._floor_db)
+        else:
+            # signal is louder — let the floor creep up slowly
+            self._floor_db += 0.003 * (rms_db - self._floor_db)
+        self._floor_db = max(-100.0, min(0.0, self._floor_db))
+        eff_db = self._floor_db + self._offset_db + self._rms_offset_db
+        self.threshold = _db_to_linear(eff_db)
 
     def set_enabled(self, enabled: bool):
         self.enabled = enabled
@@ -100,6 +131,9 @@ class GateProcessor:
         # Block-level RMS detection (more robust than peak for gate decisions)
         rms = float(np.sqrt(np.mean(block ** 2)))
         peak = float(np.max(np.abs(block)))
+
+        if self._auto_threshold:
+            self._update_auto_threshold(rms)
 
         # Gate state machine — RMS-based with hold timer
         if rms > self.threshold:
@@ -583,6 +617,249 @@ class CompressorProcessor:
                 self._out_buf = np.empty(blen, dtype=np.float32)
             np.multiply(block, np.float32(self._gain), out=self._out_buf[:blen])
         return self._out_buf[:blen]
+
+
+# ─── Limiter ───────────────────────────────────────────────────────
+
+class LimiterProcessor:
+    """Peak limiter with fast attack / program release and a hard ceiling.
+
+    Sits at the end of the mic chain so compressor makeup gain and EQ boosts
+    can't clip the processed node. Feed-forward peak detector: gain only ever
+    pulls the signal *down* to the ceiling.
+    """
+
+    def __init__(self, ceiling_db: float = -1.0, attack_ms: float = 1.0,
+                 release_ms: float = 80.0, enabled: bool = True):
+        self.enabled = enabled
+        self._ceiling_db = ceiling_db
+        self.ceiling = _db_to_linear(ceiling_db)
+        BLOCK = 480
+        self._attack_coef = np.exp(-BLOCK / (max(attack_ms, 0.05) * 0.001 * SAMPLE_RATE))
+        self._release_coef = np.exp(-BLOCK / (max(release_ms, 0.1) * 0.001 * SAMPLE_RATE))
+        self._gain = 1.0
+
+    def set_params(self, ceiling_db: float = None, attack_ms: float = None,
+                   release_ms: float = None, enabled: bool = None):
+        if ceiling_db is not None:
+            self._ceiling_db = ceiling_db
+            self.ceiling = _db_to_linear(ceiling_db)
+        if attack_ms is not None:
+            BLOCK = 480
+            self._attack_coef = np.exp(-BLOCK / (max(attack_ms, 0.05) * 0.001 * SAMPLE_RATE))
+        if release_ms is not None:
+            BLOCK = 480
+            self._release_coef = np.exp(-BLOCK / (max(release_ms, 0.1) * 0.001 * SAMPLE_RATE))
+        if enabled is not None:
+            self.enabled = enabled
+
+    def process(self, block: np.ndarray) -> np.ndarray:
+        if not self.enabled:
+            return block
+        peak = float(np.max(np.abs(block)))
+        target = (self.ceiling / peak) if peak > self.ceiling else 1.0
+        # attack when clamping harder, release when letting go
+        if target < self._gain:
+            self._gain = self._attack_coef * self._gain + (1 - self._attack_coef) * target
+        else:
+            self._gain = self._release_coef * self._gain + (1 - self._release_coef) * target
+        if not np.isfinite(self._gain):
+            self._gain = 1.0
+        return block * np.float32(self._gain)
+
+
+# ─── Adaptive Ambient Noise Reduction (FFT spectral subtraction) ─────
+
+class AmbientNoiseReduction:
+    """Adaptive spectral-subtraction NR for steady room tone.
+
+    Estimates a slow-moving per-bin noise magnitude floor and subtracts an
+    over-subtracted fraction of it (Wiener-like gain), preserving phase. This
+    complements the AI denoiser by cleaning up steady ambience (fans, AC,
+    hiss) that the model may leave behind. Inspired by Sonar's
+    ``CaptureAmbientNoiseReduction`` (floor / over-factor / rate).
+
+    Uses its own 1024-pt STFT with a 480-sample hop (= one chain block) and
+    weighted overlap-add, so it presents the same 480-in / 480-out interface.
+    """
+
+    N = 1024
+    HOP = 480
+    BINS = N // 2 + 1
+
+    def __init__(self, level: float = 0.5, over_factor: float = 1.6,
+                 floor_down: float = 0.20, floor_up: float = 0.003,
+                 gain_smooth: float = 0.5, enabled: bool = False):
+        self.enabled = enabled
+        self._level = float(np.clip(level, 0.0, 1.0))       # 0 = off, 1 = full subtraction
+        self._over = float(over_factor)
+        self._down = float(floor_down)
+        self._up = float(floor_up)
+        self._gsm = float(np.clip(gain_smooth, 0.0, 0.99))
+        self._win = (0.5 - 0.5 * np.cos(2.0 * np.pi * np.arange(self.N) / self.N)).astype(np.float32)
+        self._inwin = np.zeros(self.N, dtype=np.float32)
+        self._ola = np.zeros(self.N, dtype=np.float64)
+        self._wsum = np.zeros(self.N, dtype=np.float64)
+        self._floor = None
+        self._gain_s = np.ones(self.BINS, dtype=np.float32)
+
+    def set_params(self, level: float = None, over_factor: float = None,
+                   enabled: bool = None):
+        if level is not None:
+            self._level = float(np.clip(level, 0.0, 1.0))
+        if over_factor is not None:
+            self._over = float(over_factor)
+        if enabled is not None:
+            self.enabled = enabled
+
+    def process(self, block: np.ndarray) -> np.ndarray:
+        if not self.enabled or self._level <= 0.001:
+            return block
+        if block.ndim > 1:
+            block = block[:, 0]
+        if len(block) != self.HOP:
+            return block
+
+        self._inwin[:-self.HOP] = self._inwin[self.HOP:]
+        self._inwin[-self.HOP:] = block
+        X = np.fft.rfft(self._inwin * self._win)
+        mag = np.abs(X)
+
+        if self._floor is None:
+            self._floor = mag.copy()
+        else:
+            # fast-down / slow-up floor tracker
+            self._floor = np.where(
+                mag < self._floor,
+                (1.0 - self._down) * self._floor + self._down * mag,
+                (1.0 - self._up) * self._floor + self._up * mag,
+            )
+
+        # spectral-subtraction gain, then temporal smoothing to limit musical noise
+        sub = np.maximum(mag - self._over * self._floor, 0.0) / np.maximum(mag, 1e-9)
+        g = (1.0 - self._level) + self._level * sub
+        self._gain_s = self._gsm * self._gain_s + (1.0 - self._gsm) * g
+
+        Y = X * self._gain_s
+        frame = np.fft.irfft(Y, n=self.N)
+        self._ola += frame * self._win
+        self._wsum += self._win * self._win
+        out = self._ola[:self.HOP] / np.maximum(self._wsum[:self.HOP], 1e-8)
+        self._ola[:-self.HOP] = self._ola[self.HOP:]; self._ola[-self.HOP:] = 0.0
+        self._wsum[:-self.HOP] = self._wsum[self.HOP:]; self._wsum[-self.HOP:] = 0.0
+        return np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+
+
+# ─── Multiband Compressor (Linkwitz-Riley 4th-order crossovers) ─────
+
+class BiquadLowPass:
+    """Second-order Butterworth low-pass biquad (Direct Form I)."""
+
+    def __init__(self, freq: float, q: float = 0.707, sample_rate: int = SAMPLE_RATE):
+        self._set_params(freq, q, sample_rate)
+        self._x1 = self._x2 = self._y1 = self._y2 = 0.0
+
+    def _set_params(self, freq: float, q: float, sr: int):
+        w0 = 2.0 * np.pi * freq / sr
+        cw = np.cos(w0); sw = np.sin(w0)
+        alpha = sw / (2.0 * max(q, 0.1))
+        b0 = (1 - cw) / 2; b1 = 1 - cw; b2 = (1 - cw) / 2
+        a0 = 1 + alpha; a1 = -2 * cw; a2 = 1 - alpha
+        self._b0 = np.float32(b0 / a0); self._b1 = np.float32(b1 / a0); self._b2 = np.float32(b2 / a0)
+        self._a1 = np.float32(a1 / a0); self._a2 = np.float32(a2 / a0)
+
+    def process(self, block: np.ndarray) -> np.ndarray:
+        b0, b1, b2 = self._b0, self._b1, self._b2
+        a1, a2 = self._a1, self._a2
+        x1, x2, y1, y2 = self._x1, self._x2, self._y1, self._y2
+        ff = b0 * block.copy()
+        ff[1:] += b1 * block[:-1]
+        if len(block) > 1:
+            ff[2:] += b2 * block[:-2]
+        ff[0] += b1 * x1 + b2 * x2
+        if len(block) > 1:
+            ff[1] += b2 * x1
+        out = np.empty_like(block)
+        for i in range(len(block)):
+            y = ff[i] - a1 * y1 - a2 * y2
+            out[i] = y
+            y2 = y1; y1 = y
+        self._x1 = block[-1] if len(block) else x1
+        self._x2 = block[-2] if len(block) > 1 else x1
+        self._y1 = float(out[-1]) if len(out) else y1
+        self._y2 = float(out[-2]) if len(out) > 1 else y2
+        return out
+
+
+class _LinkwitzRiley4:
+    """4th-order Linkwitz-Riley crossover (two cascaded 2nd-order stages)."""
+
+    def __init__(self, freq: float, sample_rate: int = SAMPLE_RATE):
+        self._lp1 = BiquadLowPass(freq, 0.707, sample_rate)
+        self._lp2 = BiquadLowPass(freq, 0.707, sample_rate)
+        self._hp1 = BiquadHighPass(freq, 0.707, sample_rate)
+        self._hp2 = BiquadHighPass(freq, 0.707, sample_rate)
+
+    def split(self, x: np.ndarray):
+        low = self._lp2.process(self._lp1.process(x))
+        high = self._hp2.process(self._hp1.process(x))
+        return low, high
+
+
+class MultibandCompressor:
+    """N-band compressor using Linkwitz-Riley 4th-order crossovers.
+
+    Bands are split, each compressed independently, then summed — so loud
+    low-end (plosives/boom) is tamed without pumping the whole signal, and
+    sibilance is controlled without dulling the body. Inspired by Sonar's
+    5-band ``MBCompressor``.
+    """
+
+    def __init__(self, crossovers: list[float] = None, enabled: bool = False,
+                 band_params: list[dict] = None):
+        self.enabled = enabled
+        crossovers = crossovers or [200.0, 800.0, 3200.0]   # 4 bands
+        self._x = [_LinkwitzRiley4(f) for f in crossovers]
+        n_bands = len(crossovers) + 1
+        self._comps: list[CompressorProcessor] = []
+        for i in range(n_bands):
+            p = (band_params[i] if band_params and i < len(band_params) else {})
+            self._comps.append(CompressorProcessor(
+                threshold_db=p.get("threshold", -18.0),
+                ratio=p.get("ratio", 2.5),
+                attack_ms=p.get("attack", 5.0),
+                release_ms=p.get("release", 150.0),
+                makeup_db=p.get("makeup", 0.0),
+                enabled=True,
+            ))
+
+    def set_enabled(self, enabled: bool):
+        self.enabled = enabled
+
+    def set_band(self, idx: int, **kwargs):
+        if 0 <= idx < len(self._comps):
+            self._comps[idx].set_params(
+                threshold_db=kwargs.get("threshold"),
+                ratio=kwargs.get("ratio"),
+                attack_ms=kwargs.get("attack"),
+                release_ms=kwargs.get("release"),
+                makeup_db=kwargs.get("makeup"),
+            )
+
+    def process(self, block: np.ndarray) -> np.ndarray:
+        if not self.enabled:
+            return block
+        bands = []
+        remaining = block
+        for x in self._x:
+            low, remaining = x.split(remaining)
+            bands.append(low)
+        bands.append(remaining)
+        out = None
+        for comp, band in zip(self._comps, bands):
+            y = comp.process(band)
+            out = y if out is None else out + y
+        return out
 
 
 # ─── NVIDIA AFX Noise Processor ──────────────────────────────────
